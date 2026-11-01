@@ -1,0 +1,72 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: CyberTxTs
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+          build-root-directory: CyberTxTs
+
+      # Fonts (all SIL Open Font License, free to bundle in apps), downloaded at build time:
+      # Orbitron (titles), Rajdhani (text), Share Tech Mono (readouts). Licences go into the app too.
+      - name: Fetch fonts
+        run: |
+          set -e
+          python3 -m pip install --quiet --user --break-system-packages fonttools
+          F=app/src/main/res/font; L=app/src/main/assets/licenses
+          mkdir -p $F $L /tmp/fonts
+          g=https://github.com/google/fonts/raw/main/ofl
+          curl -fsSL -o /tmp/fonts/orbitron.ttf "$g/orbitron/Orbitron%5Bwght%5D.ttf"
+          # Orbitron only ships as a variable font; cut fixed Medium and Bold copies for Android
+          python3 -m fontTools.varLib.instancer /tmp/fonts/orbitron.ttf wght=500 -o $F/orbitron_medium.ttf
+          python3 -m fontTools.varLib.instancer /tmp/fonts/orbitron.ttf wght=700 -o $F/orbitron_bold.ttf
+          curl -fsSL -o $F/rajdhani_medium.ttf   "$g/rajdhani/Rajdhani-Medium.ttf"
+          curl -fsSL -o $F/rajdhani_semibold.ttf "$g/rajdhani/Rajdhani-SemiBold.ttf"
+          curl -fsSL -o $F/rajdhani_bold.ttf     "$g/rajdhani/Rajdhani-Bold.ttf"
+          curl -fsSL -o $F/share_tech_mono.ttf   "$g/sharetechmono/ShareTechMono-Regular.ttf"
+          curl -fsSL -o $L/Orbitron-OFL.txt      "$g/orbitron/OFL.txt"
+          curl -fsSL -o $L/Rajdhani-OFL.txt      "$g/rajdhani/OFL.txt"
+          curl -fsSL -o $L/ShareTechMono-OFL.txt "$g/sharetechmono/OFL.txt"
+          ls -la $F
+
+      # Permanent signing key (from the SIGNING_KEYSTORE secret), so test builds install over each other.
+      - name: Set up signing key
+        env:
+          SIGNING_KEYSTORE: ${{ secrets.SIGNING_KEYSTORE }}
+        run: |
+          if [ -z "$SIGNING_KEYSTORE" ]; then
+            echo "::warning::No SIGNING_KEYSTORE secret yet, so this build uses a temporary key (it won't install over other builds)."
+            exit 0
+          fi
+          echo "$SIGNING_KEYSTORE" | base64 -d > "$RUNNER_TEMP/cybertxts.p12"
+          echo "SIGNING_KEYSTORE_PATH=$RUNNER_TEMP/cybertxts.p12" >> "$GITHUB_ENV"
+
+      - name: Build debug APK
+        env:
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+        run: gradle assembleDebug --no-daemon
+
+      - name: Rename APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk CyberTxTs.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CyberTxTs-apk
+          path: CyberTxTs/CyberTxTs.apk
