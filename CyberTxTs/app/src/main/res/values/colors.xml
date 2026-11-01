@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="void_black">#FF07060F</color>
+    <color name="panel">#FF0D1022</color>
+    <color name="neon_cyan">#FF00E5FF</color>
+</resources>
