@@ -9,6 +9,9 @@
 - **Encryption:** everything is end-to-end encrypted with a key derived from the access key. After someone is removed (host kick or majority vote), the access key rotates automatically for everyone else; offline operatives catch up when they reconnect.
 - **Media:** IMG (Saver / Standard / High / Original), VID up to 5 minutes (360p / 480p / 720p), VOX notes up to 2 minutes (never stored). TX/RX progress; every piece is verified.
 - **Internet link:** phones find each other through public Nostr relays (they only ever see encrypted notes under a hash of the node code), then talk directly over WebRTC. WiFi is used instead when both phones share it.
+- **No Google services:** works on de-Googled phones (QR scanning via ZXing, Cloudflare STUN).
+- **Invites:** QR codes and tap-to-link `cybertxts://` links that pin the host's fingerprint (no host spoofing).
+- **Chat extras:** private channels (sealed to one operative), ✓ / ✓✓ / READ marks, typing indicator, reactions, edit and retract, per-node mute, cancel / retry transfers.
 - **Star Map:** see who's linked and how (WiFi / net / relayed), delays and live activity; a full-mesh view with warnings for broken pairs; a Constellation of all your nodes.
 - **Relaying:** operatives who can't link directly are reached through someone linked to both (optional, on by default).
 - **Holds link** in the background with a notification; comm-chirp message alerts.
@@ -38,6 +41,8 @@ CyberTxTs/                              Android project (Kotlin + Jetpack Compos
     SessionService.kt   background link + notifications
     MainActivity.kt     all screens except the maps
     StarMap.kt          Star Map tab, operative card, Constellation
+    Invite.kt           invite links and QR codes
+    Scanner.kt          QR scan screen (ZXing, no Google services)
     Theme.kt            Night ops / Day shift colours, fonts, open-corner panels, orbit mark, starfield
   app/src/main/res/     planet icon, splash, notification icon, comm chirp sound
 TODO.md                 to-do list, test checklists, signing steps

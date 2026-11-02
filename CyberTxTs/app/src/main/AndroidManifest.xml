@@ -13,6 +13,10 @@
 
     <!-- Voice notes -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Only for scanning QR invites. Asked the first time you scan. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
 
     <!-- allowBackup=false so a restored backup can never clone one install's ID onto another -->
     <application
@@ -36,6 +40,13 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- Invite links: cybertxts://link?c=CODE&k=KEY&h=HOST -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="cybertxts" android:host="link" />
             </intent-filter>
         </activity>
     </application>

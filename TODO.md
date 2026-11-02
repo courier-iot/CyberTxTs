@@ -17,6 +17,17 @@
 - [x] Background link service, comm-chirp alerts, encrypted message log with auto-purge
 - [x] Replies, copy, timestamps with CYCLE date dividers
 - [x] **Internet link (first version):** nodes now work across the internet as well as WiFi. Phones find each other through public Nostr relays (they only see encrypted notes under a hash of the node code), then link directly with WebRTC. WiFi is preferred when both phones share it. Operatives list shows VIA WIFI or VIA NET. Settings > LINK > Internet link (on by default; restart to apply).
+- [x] **QR invites + host verification:** INVITE shows a QR code with the node code, access key and the host's fingerprint, plus a SHARE LINK button (cybertxts:// link opens the app). LINK TO NODE > SCAN QR INVITE. Joining from a QR or link pins the host, so nobody else can claim to be host. Operatives list shows ★ HOST · VERIFIED.
+- [x] **No Google services:** QR scanning now uses ZXing Android Embedded with our own Holo Glass scan screen (open-corner frame, sweep line, LIGHT, FROM GALLERY). Works on phones without Google Play Services. Internet link uses only Cloudflare's STUN server. Invite QRs are now dark-on-cyan so any scanner reads them.
+- [x] **Key-rotation tie-break:** if two operatives rotate the key at the same instant, every phone settles on the same winner, so a node can't split.
+- [x] **Original photos:** XMP and IPTC blocks (which can hold location) are now stripped too.
+- [x] **Private channels:** long-press a message > MESSAGE PRIVATELY, or MESSAGE on a Star Map card. Sealed to the recipient's key (other operatives and relays can't read it). PRIVATE chips above the chat show threads and unread counts. Text only for now.
+- [x] **Delivery and read marks:** ✓ sent, ✓✓ delivered, READ (n) on your messages.
+- [x] **Typing indicator:** "VEGA//7F3A TRANSMITTING…" (node chat and private channels).
+- [x] **Reactions:** 👍 ❤️ 😂 😮 🔥 👀 from the long-press menu; tap a chip to add/remove yours.
+- [x] **Edit / retract:** edit your own text messages (shows EDITED); RETRACT FOR EVERYONE removes a message (and its stored media) on every phone.
+- [x] **Per-node mute:** ⋮ > MUTE ALERTS; nodes menu shows MUTED.
+- [x] **Cancel / retry / dismiss** for photo, voice and video transfers (and video preparation).
 - [x] **Star Map:** each node has CHAT / STAR MAP tabs. MY LINKS shows you in the centre with operatives around you (solid cyan WIFI, dashed crimson NET, dotted relayed/seen), delay in ms, pulses when data moves, totals (linked, TX, RX, relays). FULL MESH shows every link between everyone, with amber warnings for pairs that can't link directly. Tap an operative for their card (route, delay, linked for, data, other shared nodes, NICK / REMOVE / VOTE OUT).
 - [x] **Constellation:** nodes menu > CONSTELLATION shows all your nodes as star systems, with operatives you share drawn as bridges. Built only from what your phone knows; never shared.
 - [x] **Relay through other operatives:** if two operatives can't link directly, one operative linked to both forwards their (still signed and encrypted) traffic. Settings > LINK > Relay for other operatives (on by default). Votes and key rotation now count relayed operatives too.
@@ -43,14 +54,10 @@
 - [ ] Original-quality VID by tap-to-download: everyone gets the shrunk version; only those who tap DOWNLOAD get the original; resumable; later, other phones help share pieces
 
 ## Follow-ups
-- [ ] Cancel / retry for IMG and VID transfers
 - [ ] Faster sharing in big nodes (one slow phone slows everyone; 25 copies uploaded)
-- [ ] Strip XMP location data from original photos
-- [ ] Per-node mute
 - [ ] Clearer "can't link" diagnostics; manual IP fallback; router client-isolation warning
 - [ ] Battery check overnight
-- [ ] Tie-break if two operatives rotate the key at the same instant; host verification via the invite
-- [ ] Emoji reactions (optional); long-press menu directly on IMG / VID
+- [ ] Long-press menu directly on IMG / VID pictures
 - [ ] Glow effect on panels (the mockups' soft neon halo; skipped in the app for now)
 
 ## Test the internet link (needs 2+ phones on DIFFERENT networks)
@@ -60,6 +67,27 @@
 - [ ] Remove someone over NET: key rotates; a phone that was offline catches up when it comes back
 - [ ] Settings > Internet link OFF, restart: only WiFi links remain
 - [ ] Note which network combinations fail to link (some mobile carriers and work/school WiFi block direct links)
+
+## Test security + everyday features (update ALL phones together)
+- [ ] First scan asks for camera permission; decline it and FROM GALLERY still works with a screenshot of the invite
+- [ ] LIGHT turns the torch on and off; CANCEL closes the scanner; scanning a random QR shows NOT A CYBERTXTS INVITE
+- [ ] INVITE shows a QR; the other phone uses LINK TO NODE > SCAN QR INVITE and gets a "Link to CODE?" prompt mentioning the host fingerprint
+- [ ] SHARE LINK into a chat app; tapping the cybertxts:// link opens CyberTxTs with the same prompt
+- [ ] After joining by QR, Operatives shows ★ HOST · VERIFIED
+- [ ] Original-quality JPEG: no location in a gallery app's details
+- [ ] Private channel: A messages B privately; C sees nothing (not even in the node chat); unread chip on B
+- [ ] ✓ then ✓✓ then READ appear on your message as the other phone receives and opens it
+- [ ] TRANSMITTING… appears while the other person types, and disappears ~6 s after they stop
+- [ ] Reactions show on every phone; tapping your chip removes it
+- [ ] Edit a message (EDITED shows everywhere); retract a photo (gone on every phone)
+- [ ] MUTE ALERTS: no notification for that node, other nodes still alert
+- [ ] Start sending a video, CANCEL, then RETRY; DISMISS removes it
+- [ ] Two phones remove the same person at nearly the same moment: everyone ends on the same key (no split)
+
+## Everyday follow-ups
+- [ ] Photos / voice / video in private channels
+- [ ] Sign receipts and typing signals (currently unsigned; only node members can send them)
+- [ ] Edit history / "edited at" time
 
 ## Test the Star Map and relaying (3 phones)
 - [ ] STAR MAP > MY LINKS: each operative shows VIA WIFI / VIA NET and a delay in ms within ~20 s; dots pulse while sending a photo

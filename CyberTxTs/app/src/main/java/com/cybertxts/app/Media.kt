@@ -71,6 +71,9 @@ class PhotoVault(context: Context) {
     @Synchronized
     fun exists(tag: String, id: String): Boolean = file(tag, id).exists()
 
+    @Synchronized
+    fun deleteItem(tag: String, id: String) { file(tag, id).delete() }
+
     /** Encrypt a (possibly large) file into the vault without loading it all into memory. */
     @Synchronized
     fun saveFrom(tag: String, id: String, src: File) {
@@ -195,7 +198,7 @@ object ImageUtil {
             if (!stripped) {
                 return compress(ctx, uri, maxSide = 4096, target = MAX_ORIGINAL, startQuality = 92, maxBytes = MAX_ORIGINAL)
             }
-            val bytes = tmp.readBytes()
+            val bytes = stripJpegMetadata(tmp.readBytes())
             if (bytes.size > MAX_ORIGINAL) return null
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
@@ -266,6 +269,35 @@ object ImageUtil {
         } catch (e: OutOfMemoryError) {
             null
         }
+    }
+
+    /**
+     * Removes XMP (APP1 "http://ns.adobe.com/xap/1.0/"), extended XMP and IPTC/Photoshop (APP13) blocks from a
+     * JPEG. Some phones put location and device details there too. The EXIF block (already cleaned) and the
+     * picture itself are untouched. Returns the input unchanged if it isn't a well-formed JPEG.
+     */
+    fun stripJpegMetadata(src: ByteArray): ByteArray {
+        if (src.size < 4 || (src[0].toInt() and 0xFF) != 0xFF || (src[1].toInt() and 0xFF) != 0xD8) return src
+        val out = ByteArrayOutputStream(src.size)
+        out.write(src, 0, 2)
+        var i = 2
+        while (i + 4 <= src.size) {
+            if ((src[i].toInt() and 0xFF) != 0xFF) return src
+            val marker = src[i + 1].toInt() and 0xFF
+            if (marker == 0xDA) {                         // start of scan: copy the rest as-is
+                out.write(src, i, src.size - i)
+                return out.toByteArray()
+            }
+            if (marker == 0xD8 || marker in 0xD0..0xD7 || marker == 0x01) { out.write(src, i, 2); i += 2; continue }
+            val len = ((src[i + 2].toInt() and 0xFF) shl 8) or (src[i + 3].toInt() and 0xFF)
+            if (len < 2 || i + 2 + len > src.size) return src
+            val head = String(src, i + 4, minOf(len - 2, 40), Charsets.ISO_8859_1)
+            val drop = (marker == 0xE1 && (head.startsWith("http://ns.adobe.com/xap/1.0/") ||
+                head.startsWith("http://ns.adobe.com/xmp/extension/"))) || marker == 0xED
+            if (!drop) out.write(src, i, 2 + len)
+            i += 2 + len
+        }
+        return src
     }
 
     /** Decode for on-screen display, no larger than [maxSide] pixels. */

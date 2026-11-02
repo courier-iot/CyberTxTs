@@ -59,9 +59,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         viewing = { t -> active.value?.tag == t }
     )
 
-    fun join(code: String, password: String, created: Boolean) {
+    /** An invite opened from a link or scanned QR, waiting for the user to confirm. */
+    val pendingInvite = MutableStateFlow<Invite?>(null)
+
+    fun offerInvite(i: Invite?) { if (i != null) pendingInvite.value = i }
+
+    fun join(code: String, password: String, created: Boolean, host: String? = null) {
         val name = profileName.value ?: return
         if (joining.value) return
+        // Pin the host's fingerprint from the invite: only that phone will ever be accepted as host
+        if (!created && host != null && host.length == 32 && host != myId) {
+            val t = Crypto.roomTag(code)
+            prefs.edit().putString("host_$t", host).putBoolean("hostpin_$t", true).apply()
+        }
         val existing = nodes.value.firstOrNull { it.tag == Crypto.roomTag(code) }
         if (existing != null) {
             select(existing)

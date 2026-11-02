@@ -42,11 +42,13 @@ object Rtc {
         }
     }
 
-    /** Free public STUN servers: they only tell each phone its public address. No relay, no data passes through them. */
+    /**
+     * Cloudflare's free public STUN server: it only tells each phone its public address.
+     * No relay, and no messages pass through it. (Port 53 is a fallback for networks that block 3478.)
+     */
     val iceServers: List<PeerConnection.IceServer> = listOf(
-        "stun:stun.l.google.com:19302",
-        "stun:stun1.l.google.com:19302",
-        "stun:stun.cloudflare.com:3478"
+        "stun:stun.cloudflare.com:3478",
+        "stun:stun.cloudflare.com:53"
     ).map { PeerConnection.IceServer.builder(it).createIceServer() }
 }
 

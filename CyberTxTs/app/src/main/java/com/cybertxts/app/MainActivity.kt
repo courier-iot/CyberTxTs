@@ -78,6 +78,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.horizontalScroll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -86,6 +87,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val vm = (application as CyberApp).chatVm()   // one brain for the whole app, kept alive by the service
+        vm.offerInvite(InviteLink.parse(intent?.dataString))
         // Pick the colours before the first frame so there's no flash of the wrong theme
         val systemDark = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
         val startDark = when (vm.settings.value.theme) { "light" -> false; "system" -> systemDark; else -> true }
@@ -120,6 +122,11 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        (application as CyberApp).chatVm().offerInvite(InviteLink.parse(intent.dataString))
+    }
+
     override fun onStart() {
         super.onStart()
         AppState.foreground = true
@@ -149,6 +156,30 @@ fun AppRoot(vm: ChatViewModel) {
         nm == null -> NameScreen { vm.setProfileName(it) }
         act == null || showNew -> HomeScreen(vm, nm, canCancel = nodes.isNotEmpty() && act != null) { showNew = false }
         else -> NodeShell(vm, nodes, act) { showNew = true }
+    }
+
+    val pending by vm.pendingInvite.collectAsStateWithLifecycle()
+    val inv = pending
+    if (inv != null && nm != null) {
+        AlertDialog(
+            onDismissRequest = { vm.pendingInvite.value = null },
+            shape = cutShape(14.dp), containerColor = Holo.Panel, titleContentColor = Holo.Primary, textContentColor = Holo.Ink,
+            title = { Text("Link to ${inv.code}?", fontFamily = Mono) },
+            text = {
+                Text(
+                    if (inv.host != null) "Host fingerprint ${inv.host.take(4).uppercase()}·${inv.host.drop(4).take(4).uppercase()} is " +
+                        "included, so only that phone will ever be accepted as host."
+                    else "This invite has no host fingerprint. You'll trust the first phone that claims to be host."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.pendingInvite.value = null
+                    vm.join(inv.code, inv.key, created = false, host = inv.host)
+                }) { Text("LINK", fontFamily = Mono, color = Holo.Primary) }
+            },
+            dismissButton = { TextButton(onClick = { vm.pendingInvite.value = null }) { Text("CANCEL", fontFamily = Mono, color = Holo.Muted) } }
+        )
     }
 
     val n = notice
@@ -522,8 +553,17 @@ fun HomeScreen(vm: ChatViewModel, alias: String, canCancel: Boolean, onDone: () 
                     enabled = !joining && createPw.length >= 6, modifier = Modifier.fillMaxWidth(), height = 52
                 ) { vm.join(newCode, createPw, created = true); onDone() }
             } else {
-                InfoCard("", "Enter the node code and access key from whoever spun it up. Works on the same WiFi or across the internet.")
-                Spacer(Modifier.height(16.dp))
+                InfoCard("", "Scan their QR invite, or enter the node code and access key from whoever spun it up. Works on the same WiFi or across the internet.")
+                Spacer(Modifier.height(12.dp))
+                var scanning by remember { mutableStateOf(false) }
+                HoloButton("Scan QR invite", enabled = true, modifier = Modifier.fillMaxWidth()) { scanning = true }
+                if (scanning) ScanInviteScreen(
+                    onInvite = { i -> scanning = false; vm.offerInvite(i) },
+                    onClose = { scanning = false }
+                )
+                Spacer(Modifier.height(12.dp))
+                MonoLabel("—— OR ENTER MANUALLY ——", align = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+                Spacer(Modifier.height(10.dp))
                 OutlinedTextField(joinCode, { joinCode = it }, label = { Text("Node code") }, singleLine = true,
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters), shape = fieldShape,
                     colors = fieldColors, modifier = Modifier.fillMaxWidth())
@@ -550,6 +590,7 @@ fun NodeRow(c: NodeSession, selected: Boolean, onClick: () -> Unit) {
     val peers by c.peers.collectAsStateWithLifecycle()
     val unread by c.unread.collectAsStateWithLifecycle()
     val nickname by c.nickname.collectAsStateWithLifecycle()
+    val muted by c.muted.collectAsStateWithLifecycle()
     val stroke = when {
         selected -> Holo.Primary.copy(alpha = 0.75f)
         unread > 0 -> Holo.Accent.copy(alpha = 0.6f)
@@ -578,7 +619,8 @@ fun NodeRow(c: NodeSession, selected: Boolean, onClick: () -> Unit) {
             )
         }
         when {
-            selected -> MonoLabel("VIEWING", Holo.Primary, size = 10)
+            selected -> MonoLabel(if (muted) "VIEWING · MUTED" else "VIEWING", Holo.Primary, size = 10)
+            muted && unread == 0 -> MonoLabel("MUTED", Holo.InkDim, size = 10)
             unread > 0 -> Box(
                 Modifier.clip(CutCornerShape(topStart = 5.dp)).background(Holo.Accent).padding(horizontal = 7.dp, vertical = 2.dp)
             ) { Text("$unread", fontFamily = Mono, fontSize = 12.sp, color = Holo.Void) }
@@ -717,7 +759,7 @@ fun MembersDialog(
                                 buildString {
                                     append(nick ?: m.name)
                                     if (m.isMe) append(" (you)")
-                                    if (m.isHost) append("  \u2605 HOST")
+                                    if (m.isHost) append(if (vm.hostVerified) "  \u2605 HOST · VERIFIED" else "  \u2605 HOST")
                                 },
                                 fontWeight = FontWeight.Bold
                             )
@@ -784,7 +826,22 @@ fun ChatScreen(
 ) {
     var tab by remember { mutableStateOf("chat") }
     val room by vm.room.collectAsStateWithLifecycle()
-    val messages by vm.messages.collectAsStateWithLifecycle()
+    val allMessages by vm.messages.collectAsStateWithLifecycle()
+    var dmPeer by remember { mutableStateOf<String?>(null) }      // open private thread, or null for the node chat
+    val messages = remember(allMessages, dmPeer) { allMessages.filter { it.dm == dmPeer } }
+    val receipts by vm.receipts.collectAsStateWithLifecycle()
+    val typingMap by vm.typing.collectAsStateWithLifecycle()
+    val dmUnread by vm.dmUnread.collectAsStateWithLifecycle()
+    val mutedNode by vm.muted.collectAsStateWithLifecycle()
+    var editingId by remember { mutableStateOf<String?>(null) }
+    var confirmDelete by remember { mutableStateOf<Msg?>(null) }
+    var showInvite by remember { mutableStateOf(false) }
+    var nowTick by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) { while (true) { delay(1_000); nowTick = System.currentTimeMillis() } }
+    DisposableEffect(dmPeer) {
+        vm.openDm(dmPeer)
+        onDispose { vm.openDm(null) }
+    }
     val peers by vm.peers.collectAsStateWithLifecycle()
     val connected by vm.connected.collectAsStateWithLifecycle()
     val known by vm.known.collectAsStateWithLifecycle()
@@ -864,9 +921,12 @@ fun ChatScreen(
     val title = if (nickname.isBlank()) room.code else nickname
     val iAmHost = hostId == vm.myId
 
-    LaunchedEffect(messages.size) {
+    LaunchedEffect(messages.size, dmPeer, tab) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
-        if (AppState.foreground) vm.unread.value = 0
+        if (AppState.foreground && tab == "chat") {
+            vm.unread.value = 0
+            vm.markRead(dmPeer)
+        }
     }
     LaunchedEffect(peers) {
         if (peers > 0) searchedTooLong = false else { delay(45_000); searchedTooLong = true }
@@ -877,13 +937,19 @@ fun ChatScreen(
         while (true) { relays = vm.relayCount(); delay(3_000) }
     }
 
-    fun invite() {
-        val send = Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(Intent.EXTRA_TEXT,
-                "Link to my CyberTxTs node.\nNode code: ${room.code}\nAccess key: ${room.password}\n(Works over WiFi or the internet.)")
-        }
-        ctx.startActivity(Intent.createChooser(send, "Invite to node"))
+    fun invite() { showInvite = true }
+
+    if (showInvite) InviteDialog(vm) { showInvite = false }
+    val cd = confirmDelete
+    if (cd != null) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = null },
+            shape = cutShape(14.dp), containerColor = Holo.Panel, titleContentColor = Holo.Primary, textContentColor = Holo.Ink,
+            title = { Text("Retract this transmission?") },
+            text = { Text("It's removed for everyone in the node. Phones that are offline remove it when they next link.") },
+            confirmButton = { TextButton(onClick = { vm.delete(cd.id); confirmDelete = null }) { Text("RETRACT", fontFamily = Mono, color = Holo.Danger) } },
+            dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("CANCEL", fontFamily = Mono, color = Holo.Primary) } }
+        )
     }
 
     if (showMembers) MembersDialog(vm, members, votes, iAmHost) { showMembers = false }
@@ -990,6 +1056,8 @@ fun ChatScreen(
                 ) {
                     DropdownMenuItem(text = { Text("OPERATIVES (${peers + 1})", fontFamily = Mono) },
                         onClick = { menuOpen = false; showMembers = true })
+                    DropdownMenuItem(text = { Text(if (mutedNode) "UNMUTE ALERTS" else "MUTE ALERTS", fontFamily = Mono) },
+                        onClick = { menuOpen = false; vm.setMuted(!mutedNode) })
                     DropdownMenuItem(text = { Text("RENAME NODE", fontFamily = Mono) },
                         onClick = { menuOpen = false; showRename = true })
                     DropdownMenuItem(text = { Text("SETTINGS", fontFamily = Mono) },
@@ -1031,6 +1099,37 @@ fun ChatScreen(
             }
         }
 
+        val dp = dmPeer
+        if (dp != null) {
+            Row(
+                Modifier.fillMaxWidth().background(Holo.Theirs).padding(start = 12.dp, end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    MonoLabel("PRIVATE CHANNEL · " + opTag(nicks[dp] ?: known[dp] ?: "Operative", dp), Holo.Accent, size = 12)
+                    MonoLabel("SEALED TO THEIR KEY · OTHER OPERATIVES CAN'T READ IT", Holo.InkDim, size = 10)
+                }
+                IconTextButton("\u2715", "Close private channel", Holo.Muted) { dmPeer = null; replyingTo = null; editingId = null }
+            }
+        } else {
+            val threads = (allMessages.mapNotNull { it.dm } + dmUnread.keys).distinct()
+            if (threads.isNotEmpty()) {
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically
+                ) {
+                    MonoLabel("PRIVATE", Holo.InkDim, size = 10)
+                    threads.forEach { id ->
+                        val n = dmUnread[id] ?: 0
+                        GhostButton(
+                            (nicks[id] ?: known[id] ?: id.take(4)) + (if (n > 0) " · $n" else ""), height = 36,
+                            color = if (n > 0) Holo.Accent else Holo.Primary
+                        ) { dmPeer = id }
+                    }
+                }
+            }
+        }
+
         LazyColumn(
             Modifier.weight(1f).padding(horizontal = 14.dp),
             state = listState,
@@ -1057,7 +1156,14 @@ fun ChatScreen(
                         Modifier.fillMaxWidth(),
                         horizontalAlignment = if (mine) Alignment.End else Alignment.Start
                     ) {
-                        MonoLabel(label + " · " + timeOf(ctx, m.ts) + kind, tint,
+                        val rc = receipts[m.id]
+                        val status = when {
+                            !mine || m.deleted -> ""
+                            rc == null -> " · \u2713"
+                            rc.second > 0 -> if (m.dm != null) " · READ" else " · READ ${rc.second}"
+                            else -> " · \u2713\u2713"
+                        }
+                        MonoLabel(label + " · " + timeOf(ctx, m.ts) + kind + (if (m.edited) " · EDITED" else "") + status, tint,
                             align = if (mine) TextAlign.End else TextAlign.Start)
                         if (!mine && nicks[m.senderId] != null) {
                             MonoLabel("CALLSIGN " + m.senderName.uppercase(), Holo.InkDim, size = 10)
@@ -1084,7 +1190,9 @@ fun ChatScreen(
                                     if (idx >= 0) scope.launch { listState.animateScrollToItem(idx) }
                                 }
                             }
-                            if (m.image != null) {
+                            if (m.deleted) {
+                                Text("[ TRANSMISSION RETRACTED ]", fontFamily = Mono, fontSize = 12.sp, color = Holo.InkDim)
+                            } else if (m.image != null) {
                                 PhotoBubble(vm, m, transfers[m.id], mine) { openPhoto = m }
                             } else if (m.video != null) {
                                 VideoBubble(vm, m, transfers[m.id], preparing[m.id], mine) { openVideo = m }
@@ -1098,10 +1206,39 @@ fun ChatScreen(
                             expanded = menuFor == m.id, onDismissRequest = { menuFor = null },
                             modifier = Modifier.background(Holo.Panel)
                         ) {
+                            if (!m.deleted) {
+                                Row(Modifier.padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    NodeSession.REACTIONS.forEach { e ->
+                                        val on = vm.myId in (m.reactions[e] ?: emptySet())
+                                        Box(
+                                            Modifier.size(40.dp)
+                                                .then(if (on) Modifier.background(Holo.PrimaryDeep) else Modifier)
+                                                .clickable { vm.react(m.id, e); menuFor = null },
+                                            contentAlignment = Alignment.Center
+                                        ) { Text(e, fontSize = 20.sp) }
+                                    }
+                                }
+                                HorizontalDivider(color = Holo.Muted.copy(alpha = 0.3f))
+                            }
                             DropdownMenuItem(text = { Text("REPLY", fontFamily = Mono) }, onClick = {
                                 menuFor = null; replyingTo = m
                             })
-                            if (m.text.isNotEmpty()) {
+                            if (!mine && dmPeer == null) {
+                                DropdownMenuItem(text = { Text("MESSAGE PRIVATELY", fontFamily = Mono) }, onClick = {
+                                    menuFor = null; dmPeer = m.senderId; replyingTo = null
+                                })
+                            }
+                            if (mine && !m.deleted && m.dm == null && m.text.isNotEmpty() && m.image == null && m.video == null && m.voice == null) {
+                                DropdownMenuItem(text = { Text("EDIT", fontFamily = Mono) }, onClick = {
+                                    menuFor = null; editingId = m.id; input = m.text; replyingTo = null
+                                })
+                            }
+                            if (mine && !m.deleted) {
+                                DropdownMenuItem(text = { Text("RETRACT FOR EVERYONE", fontFamily = Mono, color = Holo.Danger) }, onClick = {
+                                    menuFor = null; confirmDelete = m
+                                })
+                            }
+                            if (m.text.isNotEmpty() && !m.deleted) {
                                 DropdownMenuItem(text = { Text("COPY TEXT", fontFamily = Mono) }, onClick = {
                                     menuFor = null
                                     clipboard.setText(AnnotatedString(m.text))
@@ -1116,13 +1253,48 @@ fun ChatScreen(
                             }
                         }
                         }
+                        if (m.reactions.isNotEmpty()) {
+                            Row(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                m.reactions.forEach { (e, who) ->
+                                    val on = vm.myId in who
+                                    Row(
+                                        Modifier.openButton(if (on) Holo.Primary else Holo.Muted.copy(alpha = 0.6f), cut = 5.dp)
+                                            .clickable { vm.react(m.id, e) }.padding(horizontal = 7.dp, vertical = 3.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(e, fontSize = 14.sp)
+                                        Spacer(Modifier.width(4.dp))
+                                        Text("${who.size}", fontFamily = Mono, fontSize = 12.sp, color = if (on) Holo.Primary else Holo.InkDim)
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 }
             }
         }
 
+        val typers = typingMap.filter { (k, exp) ->
+            exp > nowTick && (if (dmPeer == null) !k.startsWith("dm:") else k == "dm:$dmPeer")
+        }.keys.map { k -> k.removePrefix("dm:") }
+        if (typers.isNotEmpty()) {
+            MonoLabel(
+                typers.take(3).joinToString(", ") { opTag(nicks[it] ?: known[it] ?: "Operative", it) } + " TRANSMITTING\u2026",
+                Holo.Primary, size = 11, modifier = Modifier.padding(start = 14.dp, bottom = 4.dp)
+            )
+        }
         HorizontalDivider(color = Holo.Primary.copy(alpha = 0.25f))
+        val eid = editingId
+        if (eid != null) {
+            Row(
+                Modifier.fillMaxWidth().background(Holo.Panel).padding(start = 12.dp, end = 4.dp, top = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                MonoLabel("EDITING TRANSMISSION", Holo.Primary, modifier = Modifier.weight(1f))
+                IconTextButton("\u2715", "Cancel edit", Holo.Muted) { editingId = null; input = "" }
+            }
+        }
         val rt = replyingTo
         if (rt != null) {
             Row(
@@ -1152,20 +1324,25 @@ fun ChatScreen(
                 Modifier.fillMaxWidth().background(Holo.Panel.copy(alpha = 0.9f)).padding(start = 10.dp, end = 10.dp, top = 10.dp, bottom = 14.dp),
                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                GhostButton("IMG", Modifier.width(48.dp), description = "Send photo or video") {
+                if (dmPeer == null) GhostButton("IMG", Modifier.width(48.dp), description = "Send photo or video") {
                     photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
                 }
-                GhostButton("VOX", Modifier.width(48.dp), description = "Record voice note") {
+                if (dmPeer == null) GhostButton("VOX", Modifier.width(48.dp), description = "Record voice note") {
                     if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                         startRecording()
                     } else micPermission.launch(Manifest.permission.RECORD_AUDIO)
                 }
                 OutlinedTextField(
-                    input, { input = it }, placeholder = { Text("Transmit a message") },
+                    input, { input = it; if (it.isNotBlank()) vm.typingNow(dmPeer) },
+                    placeholder = { Text(if (dmPeer != null) "Private transmission" else "Transmit a message") },
                     shape = RectangleShape, colors = fieldColors, modifier = Modifier.weight(1f), maxLines = 4
                 )
                 Button(
-                    onClick = { vm.send(input, replyingTo?.id); input = ""; replyingTo = null },
+                    onClick = {
+                        val e = editingId
+                        if (e != null) vm.edit(e, input) else vm.send(input, replyingTo?.id, dmPeer)
+                        input = ""; replyingTo = null; editingId = null
+                    },
                     enabled = input.isNotBlank(), shape = cutShape(8.dp),
                     contentPadding = PaddingValues(0.dp), modifier = Modifier.size(width = 52.dp, height = 48.dp)
                         .semantics { contentDescription = "Transmit" },
@@ -1177,7 +1354,7 @@ fun ChatScreen(
             }
         }
         } else {
-            StarMapView(vm, alsoIn)
+            StarMapView(vm, alsoIn) { id -> tab = "chat"; dmPeer = id }
         }
     }
     }
@@ -1186,18 +1363,33 @@ fun ChatScreen(
 // ---------- Photos ----------
 
 @Composable
-fun TransferBar(p: Float?, mine: Boolean) {
+fun TransferBar(p: Float?, mine: Boolean, vm: NodeSession? = null, m: Msg? = null) {
     if (p == null) return
     Spacer(Modifier.height(4.dp))
     if (p < 0f) {
-        Text(if (mine) "TX FAILED · TRY AGAIN" else "RX INCOMPLETE",
+        Text(if (mine) "TX FAILED / CANCELLED" else "RX INCOMPLETE",
             style = MaterialTheme.typography.labelSmall, color = Holo.Danger)
+        if (vm != null && m != null) {
+            Spacer(Modifier.height(4.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (mine) GhostButton("Retry", height = 36, color = Holo.Primary) { vm.retry(m) }
+                GhostButton("Dismiss", height = 36) { vm.dismiss(m.id) }
+            }
+        }
     } else {
-        LinearProgressIndicator(
-            progress = { p }, color = Holo.Primary, trackColor = Holo.Primary.copy(alpha = 0.2f), strokeCap = StrokeCap.Butt,
-            modifier = Modifier.width(160.dp).height(4.dp)
-        )
-        MonoLabel((if (mine) "TX " else "RX ") + "${(p * 100).toInt()}%")
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column {
+                LinearProgressIndicator(
+                    progress = { p }, color = Holo.Primary, trackColor = Holo.Primary.copy(alpha = 0.2f), strokeCap = StrokeCap.Butt,
+                    modifier = Modifier.width(140.dp).height(4.dp)
+                )
+                MonoLabel((if (mine) "TX " else "RX ") + "${(p * 100).toInt()}%")
+            }
+            if (mine && vm != null && m != null) {
+                Spacer(Modifier.width(8.dp))
+                GhostButton("Cancel", height = 32, color = Holo.Muted) { vm.cancelTransfer(m.id) }
+            }
+        }
     }
 }
 
@@ -1228,7 +1420,7 @@ fun PhotoBubble(vm: NodeSession, m: Msg, progress: Float?, mine: Boolean, onClic
                 style = MaterialTheme.typography.bodySmall, color = Holo.InkDim, fontStyle = FontStyle.Italic
             )
         }
-        TransferBar(progress, mine)
+        TransferBar(progress, mine, vm, m)
     }
 }
 
@@ -1257,7 +1449,7 @@ fun VoiceBubble(vm: NodeSession, m: Msg, progress: Float?, mine: Boolean) {
                 MonoLabel("VOX " + (if (isMe) "${fmtDur(pos)} / " else "") + fmtDur(m.durMs))
             }
         }
-        TransferBar(progress, mine)
+        TransferBar(progress, mine, vm, m)
         if (ready && vm.readVoice(m) == null) {
             Text("VOX expired: not kept after unlinking or restarting",
                 style = MaterialTheme.typography.labelSmall, color = Holo.InkDim, fontStyle = FontStyle.Italic)
@@ -1372,6 +1564,9 @@ fun VideoBubble(vm: NodeSession, m: Msg, progress: Float?, preparing: Float?, mi
             }
         }
         MonoLabel("VID " + fmtDur(m.durMs))
+        if (preparing != null && mine) {
+            GhostButton("Cancel", height = 32, color = Holo.Muted) { vm.cancelTransfer(m.id) }
+        }
         if (preparing != null) {
             Spacer(Modifier.height(4.dp))
             LinearProgressIndicator(
@@ -1381,7 +1576,7 @@ fun VideoBubble(vm: NodeSession, m: Msg, progress: Float?, preparing: Float?, mi
             Text("PREP ${(preparing * 100).toInt()}% · COMPRESSING",
                 style = MaterialTheme.typography.labelSmall, color = Holo.InkDim)
         }
-        TransferBar(progress, mine)
+        TransferBar(progress, mine, vm, m)
         if (!playable && preparing == null && progress == null) {
             Text("Video no longer available", style = MaterialTheme.typography.labelSmall,
                 color = Holo.InkDim, fontStyle = FontStyle.Italic)
@@ -1619,4 +1814,63 @@ fun NicknameDialog(alias: String, current: String, onSave: (String) -> Unit, onC
         confirmButton = { TextButton(onClick = { onSave(text) }) { Text("Save", color = Holo.Primary) } },
         dismissButton = { TextButton(onClick = onClose) { Text("Cancel", color = Holo.Muted) } }
     )
+}
+
+
+// ---------- QR invite ----------
+
+@Composable
+fun InviteDialog(vm: NodeSession, onClose: () -> Unit) {
+    val ctx = LocalContext.current
+    val hostId by vm.hostId.collectAsStateWithLifecycle()
+    val room by vm.room.collectAsStateWithLifecycle()
+    val inv = remember(room.password, hostId) { vm.invite() }
+    val link = remember(inv) { InviteLink.build(inv) }
+    val qr by produceState<ImageBitmap?>(null, link) {
+        value = withContext(Dispatchers.Default) { runCatching { InviteLink.qr(link).asImageBitmap() }.getOrNull() }
+    }
+    val hostTag = hostId?.let { h ->
+        val name = if (h == vm.myId) room.name else (vm.known.value[h] ?: "Host")
+        opTag(name, h)
+    }
+    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Column(
+            Modifier.fillMaxWidth().padding(16.dp).openPanel(Holo.Panel, Holo.Primary.copy(alpha = 0.8f), cut = 18.dp)
+                .verticalScroll(rememberScrollState()).padding(18.dp),
+            horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text("INVITE TO NODE", fontFamily = Display, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Holo.Primary)
+            Box(Modifier.size(240.dp).background(Holo.Void), contentAlignment = Alignment.Center) {
+                val b = qr
+                if (b != null) Image(bitmap = b, contentDescription = "Invite QR code", modifier = Modifier.size(232.dp))
+                else CircularProgressIndicator(color = Holo.Primary)
+            }
+            MonoLabel("SCAN WITH CYBERTXTS · LINK TO NODE · SCAN QR INVITE", align = TextAlign.Center)
+            Column(Modifier.fillMaxWidth().openPanel(Holo.Void, Holo.Muted.copy(alpha = 0.4f)).padding(10.dp)) {
+                MonoLabel("NODE CODE", size = 10)
+                Text(inv.code, fontFamily = Display, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = Holo.Primary)
+                Spacer(Modifier.height(6.dp))
+                MonoLabel("ACCESS KEY", size = 10)
+                Text(inv.key, fontFamily = Mono, fontSize = 15.sp, color = Holo.Ink)
+                Spacer(Modifier.height(6.dp))
+                MonoLabel("HOST FINGERPRINT", size = 10)
+                Text(
+                    if (hostTag != null) "$hostTag · " + (if (vm.hostVerified) "VERIFIED" else "UNVERIFIED") else "UNKNOWN (no host seen yet)",
+                    fontFamily = Mono, fontSize = 13.sp, color = if (vm.hostVerified) Holo.Primary else Holo.InkDim
+                )
+            }
+            Text("Anyone with this code and key can join. Share it only with people you trust.",
+                style = MaterialTheme.typography.bodySmall, color = Holo.InkDim, textAlign = TextAlign.Center)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                GhostButton("Close", Modifier.weight(1f)) { onClose() }
+                HoloButton("Share link", enabled = true, modifier = Modifier.weight(1f), height = 44) {
+                    val send = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_TEXT, InviteLink.shareText(inv, hostTag))
+                    }
+                    ctx.startActivity(Intent.createChooser(send, "Invite to node"))
+                }
+            }
+        }
+    }
 }

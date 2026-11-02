@@ -62,4 +62,9 @@ dependencies {
     // Internet link: direct phone-to-phone WebRTC data channels, and relay websockets for finding each other
     implementation("io.getstream:stream-webrtc-android:1.1.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
+    // QR invites: make and read QR codes (ZXing), live camera scanning (ZXing Android Embedded).
+    // Both open source and fully offline: no Google Play Services needed.
+    implementation("com.google.zxing:core:3.5.3")
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0") { isTransitive = false }
 }

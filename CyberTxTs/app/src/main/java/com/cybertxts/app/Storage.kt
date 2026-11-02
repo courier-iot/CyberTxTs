@@ -68,7 +68,9 @@ class HistoryStore(context: Context) {
             arr.put(JSONObject().put("id", m.id).put("sid", m.senderId).put("n", m.senderName)
                 .put("text", m.text).put("ts", m.ts).put("sys", m.system)
                 .put("img", m.image ?: "").put("w", m.imgW).put("h", m.imgH)
-                .put("vid", m.video ?: "").put("dur", m.durMs).put("re", m.replyTo ?: ""))
+                .put("vid", m.video ?: "").put("dur", m.durMs).put("re", m.replyTo ?: "")
+                .put("dm", m.dm ?: "").put("ed", m.edited).put("del", m.deleted)
+                .put("rx", JSONObject().apply { m.reactions.forEach { (e, who) -> put(e, JSONArray(who.toList())) } }))
         }
         val f = file(tag)
         f.delete() // EncryptedFile refuses to overwrite
@@ -88,7 +90,14 @@ class HistoryStore(context: Context) {
                     it.getString("text"), it.getLong("ts"), it.optBoolean("sys", false),
                     it.optString("img", "").ifEmpty { null }, it.optInt("w", 0), it.optInt("h", 0),
                     durMs = it.optLong("dur", 0L), video = it.optString("vid", "").ifEmpty { null },
-                    replyTo = it.optString("re", "").ifEmpty { null })
+                    replyTo = it.optString("re", "").ifEmpty { null },
+                    dm = it.optString("dm", "").ifEmpty { null },
+                    edited = it.optBoolean("ed", false), deleted = it.optBoolean("del", false),
+                    reactions = it.optJSONObject("rx")?.let { o ->
+                        o.keys().asSequence().associateWith { e ->
+                            val a = o.getJSONArray(e); (0 until a.length()).map { k -> a.getString(k) }.toSet()
+                        }
+                    } ?: emptyMap())
             }.filter { it.ts >= limit }
         } catch (e: Exception) { emptyList() }
     }

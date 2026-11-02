@@ -103,7 +103,7 @@ private fun DrawScope.meStar(c: Offset, r: Float) {
 
 /** The STAR MAP tab inside a node. */
 @Composable
-fun StarMapView(vm: NodeSession, alsoIn: (String) -> List<String>) {
+fun StarMapView(vm: NodeSession, alsoIn: (String) -> List<String>, onMessage: (String) -> Unit = {}) {
     var mesh by remember { mutableStateOf(false) }
     var snap by remember { mutableStateOf(vm.mapSnapshot()) }
     var selected by remember { mutableStateOf<String?>(null) }
@@ -231,7 +231,8 @@ fun StarMapView(vm: NodeSession, alsoIn: (String) -> List<String>) {
 
             val sel = selected?.let { byId[it] }
             if (sel != null) {
-                OperativeCard(vm, sel, hostId == vm.myId, alsoIn(sel.id), byId, Modifier.align(Alignment.BottomCenter)) { selected = null }
+                OperativeCard(vm, sel, hostId == vm.myId, alsoIn(sel.id), byId, Modifier.align(Alignment.BottomCenter),
+                    onMessage = { selected = null; onMessage(it) }) { selected = null }
             }
         }
 
@@ -292,7 +293,8 @@ private fun Stat(title: String, value: String, modifier: Modifier = Modifier) {
 @Composable
 fun OperativeCard(
     vm: NodeSession, p: NodeSession.MapPeer, iAmHost: Boolean, alsoIn: List<String>,
-    byId: Map<String, NodeSession.MapPeer>, modifier: Modifier = Modifier, onClose: () -> Unit
+    byId: Map<String, NodeSession.MapPeer>, modifier: Modifier = Modifier, onMessage: (String) -> Unit = {},
+    onClose: () -> Unit
 ) {
     val nicks by vm.people.nicknames.collectAsStateWithLifecycle()
     var showNick by remember { mutableStateOf(false) }
@@ -365,6 +367,7 @@ fun OperativeCard(
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             GhostButton("Nick", Modifier.weight(1f), color = Holo.Primary) { showNick = true }
+            if (p.linked) GhostButton("Message", Modifier.weight(1f), color = Holo.Primary) { onMessage(p.id) }
             if (iAmHost) GhostButton("Remove", Modifier.weight(1f), color = Holo.Danger) { confirm = true }
             else if (!p.host) GhostButton("Vote out", Modifier.weight(1f), color = Holo.Danger) { confirm = true }
         }
