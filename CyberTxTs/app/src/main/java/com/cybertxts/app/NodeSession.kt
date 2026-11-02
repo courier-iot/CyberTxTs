@@ -99,7 +99,12 @@ class NodeSession(
     /** Certificates saying earlier IDs of mine moved to this phone. Shown to everyone I link with. */
     private val myChain: () -> List<JSONObject> = { emptyList() },
     /** Someone showed us a succession certificate: the app checks and applies it across all nodes. */
-    private val onSuccession: (JSONObject) -> Unit = {}
+    private val onSuccession: (JSONObject) -> Unit = {},
+    /** Direct link (contact chat): who the other person is right now. Null for nodes and offer nodes. */
+    val directPeer: (() -> String)? = null,
+    /** A contact request arrived here: (this session, from, their callsign, link secret, how they found you). */
+    private val onContactRequest: (NodeSession, String, String, ByteArray, String) -> Unit = { _, _, _, _, _ -> },
+    private val onPeersChanged: (NodeSession, Set<String>) -> Unit = { _, _ -> }
 ) {
     val tag: String = Crypto.roomTag(initial.code)
     private val myEk: ByteArray = ecdh.second
@@ -211,7 +216,7 @@ class NodeSession(
         transport?.stop(); transport = null
         synchronized(voices) { voices.clear() }
         dropAssemblies()
-        prefs.edit().remove("excl_$t").remove("bundles_$t").remove("prev_$t").remove("nick_$t").remove("mute_$t").remove("hostcert_$t").remove("hostts_$t").apply()
+        prefs.edit().remove("excl_$t").remove("bundles_$t").remove("prev_$t").remove("nick_$t").remove("mute_$t").remove("hostcert_$t").remove("hostts_$t").remove("dlv_$t").apply()
         scope.launch(Dispatchers.IO) {
             if (eraseHistory || !s.keepHistory) store.delete(t) else store.save(t, snapshot, s.retentionDays)
             if (eraseHistory || !s.keepHistory) vault.delete(t) else vault.prune(t, keepKeys(snapshot, s))
@@ -241,12 +246,14 @@ class NodeSession(
         val ts = System.currentTimeMillis()
         val re = replyTo ?: ""
         add(Msg(id, myId, r.name, t, ts, replyTo = replyTo))
-        scope.launch(Dispatchers.Default) {
-            val sig = Identity.sign("msg|$tag|$id|$myId|$ts|$t|$re".toByteArray())
-            transport?.send(JSONObject().put("type", "msg").put("id", id).put("sid", myId)
-                .put("n", r.name).put("text", t).put("ts", ts).put("re", re)
-                .put("pk", b64(myPub)).put("sig", b64(sig)).toString().toByteArray())
-        }
+        scope.launch(Dispatchers.Default) { transport?.send(msgFrame(id, ts, t, re)) }
+    }
+
+    private fun msgFrame(id: String, ts: Long, t: String, re: String): ByteArray {
+        val sig = Identity.sign("msg|$tag|$id|$myId|$ts|$t|$re".toByteArray())
+        return JSONObject().put("type", "msg").put("id", id).put("sid", myId)
+            .put("n", room.value.name).put("text", t).put("ts", ts).put("re", re)
+            .put("pk", b64(myPub)).put("sig", b64(sig)).toString().toByteArray()
     }
 
     private fun announce() {
@@ -277,7 +284,11 @@ class NodeSession(
         connected.value = ids
         peers.value = ids.size
         val fresh = ids - before
-        if (fresh.isNotEmpty()) scope.launch(Dispatchers.Default) { delay(800); shareCertificates(fresh) }
+        if (fresh.isNotEmpty()) scope.launch(Dispatchers.Default) {
+            delay(800); shareCertificates(fresh)
+            if (directPeer != null) { delay(700); flushOutbox() }
+        }
+        onPeersChanged(this, ids)
         if (ids != before) announce()
         onChanged()
     }
@@ -294,6 +305,8 @@ class NodeSession(
                 else -> j.optString("sid").takeIf { it.length == 32 }
             }
             if (origin != null && origin != myId) noteSeen(origin, bytes.size)
+            val dp = directPeer?.invoke()
+            if (dp != null && origin != null && origin != myId && type in CONTENT_TYPES && origin !in people.lineage(dp)) return
             when (type) {
                 "ping" -> handlePing(j)
                 "pong" -> handlePong(j)
@@ -304,6 +317,7 @@ class NodeSession(
                 "edit" -> handleEdit(j)
                 "succ" -> j.optJSONObject("c")?.let { c -> if (c.toString().length < 12_000) onSuccession(c) }
                 "hosto" -> handleHostOver(j)
+                "creq" -> handleContactRequest(j)
                 "full" -> if (connected.value.isEmpty()) {
                     onNotice("That node is full (${Limits.MAX_ROOM} operatives max).")
                     leave(false)
@@ -317,7 +331,7 @@ class NodeSession(
                 "rekey" -> scope.launch(Dispatchers.Default) { acceptBundle(j) }
             }
             val onlyTo = when (type) {
-                "dm", "media" -> j.optString("to").ifEmpty { null }
+                "dm", "media", "creq" -> j.optString("to").ifEmpty { null }
                 "mc" -> mediaTo[j.optString("id")]
                 else -> null
             }
@@ -345,9 +359,10 @@ class NodeSession(
         people.seen(sid, n)
         val shown = people.alias(sid, n)
         known.update { it + (sid to shown) }
+        val isNew = synchronized(seen) { !seen.contains(id) }
         add(Msg(id, sid, shown, text, ts, replyTo = re.ifEmpty { null }))
-        if (sid != myId) pendingDelivered.add(id)
-        if (sid != myId) {
+        if (sid != myId) pendingDelivered.add(id)       // a resent copy still gets a delivery mark back
+        if (sid != myId && isNew) {
             if (!(AppState.foreground && viewing(tag))) unread.update { it + 1 }
             if (!AppState.foreground && !muted.value) Notifier.message(app, displayName(), people.label(sid, n), text)
         }
@@ -644,6 +659,7 @@ class NodeSession(
         }
         if (changed) {
             receipts.value = deliveredBy.keys.associateWith { (deliveredBy[it]?.size ?: 0) to (readBy[it]?.size ?: 0) }
+            if (directPeer != null) rememberDelivered(deliveredBy.keys)
         }
     }
 
@@ -898,9 +914,72 @@ class NodeSession(
         announce()
     }
 
+    // ---------- Contacts: requests and the direct-link outbox ----------
+
+    /** Ask [to] for a direct link, sealing the link's secret to their key. False if we don't have their key yet. */
+    fun sendContactRequest(to: String, secret: ByteArray, via: String): Boolean {
+        val pub = eks[to] ?: return false
+        scope.launch(Dispatchers.Default) {
+            val ts = System.currentTimeMillis()
+            val (eph, ct) = Crypto.wrapFor(pub, to, JSONObject().put("s", b64(secret)).toString().toByteArray(), "creq|$tag|$to".toByteArray())
+            val e = b64(eph); val c = b64(ct)
+            val sig = Identity.sign("creq|$tag|$myId|$to|$via|$ts|${Crypto.sha256Hex((e + c).toByteArray())}".toByteArray())
+            transport?.send(JSONObject().put("type", "creq").put("sid", myId).put("n", room.value.name).put("to", to)
+                .put("via", via).put("ts", ts).put("e", e).put("c", c).put("pk", b64(myPub)).put("sig", b64(sig))
+                .toString().toByteArray())
+        }
+        return true
+    }
+
+    private fun handleContactRequest(j: JSONObject) {
+        val sid = j.getString("sid")
+        if (j.optString("to") != myId || isBanned(sid) || sid == myId) return
+        val n = j.optString("n").take(24); val via = j.optString("via"); val ts = j.getLong("ts")
+        val e = j.getString("e"); val c = j.getString("c")
+        if (c.length > 2_000 || via !in setOf("node", "qr", "link") || abs(System.currentTimeMillis() - ts) > 86_400_000L) return
+        if (!verified(j, "creq|$tag|$sid|$myId|$via|$ts|${Crypto.sha256Hex((e + c).toByteArray())}")) return
+        val plain = Crypto.unwrap(ecdh.first, Base64.decode(e, Base64.NO_WRAP), myId, Base64.decode(c, Base64.NO_WRAP),
+            "creq|$tag|$myId".toByteArray()) ?: return
+        val secret = runCatching { Base64.decode(JSONObject(plain.toString(Charsets.UTF_8)).getString("s"), Base64.NO_WRAP) }.getOrNull() ?: return
+        if (secret.size != 32) return
+        people.seen(sid, n)
+        known.update { it + (sid to people.alias(sid, n)) }
+        onContactRequest(this, sid, people.alias(sid, n), secret, via)
+    }
+
+    private val delivered: MutableSet<String> by lazy {
+        ConcurrentHashMap.newKeySet<String>().apply { addAll(prefs.getStringSet("dlv_$tag", emptySet()) ?: emptySet()) }
+    }
+
+    private fun rememberDelivered(ids: Collection<String>) {
+        val mine = messages.value.filter { it.senderId == myId }.map { it.id }.toSet()
+        if (!delivered.addAll(ids.filter { it in mine })) return
+        delivered.retainAll(mine)
+        prefs.edit().putStringSet("dlv_$tag", HashSet(delivered)).apply()
+    }
+
+    fun isDelivered(id: String) = id in delivered || receipts.value[id] != null
+
+    /** Your texts in this direct link that haven't reached them yet. */
+    fun queuedCount(): Int = messages.value.count { isQueued(it) }
+
+    private fun isQueued(m: Msg) = m.senderId == myId && !m.system && !m.deleted && m.text.isNotEmpty() &&
+        m.image == null && m.video == null && m.voice == null && m.dm == null && !isDelivered(m.id)
+
+    /** Direct links keep an outbox: undelivered texts go out again whenever the other phone links. */
+    private fun flushOutbox() {
+        if (closed || connected.value.isEmpty()) return
+        messages.value.filter { isQueued(it) }.takeLast(50).forEach { m ->
+            transport?.send(msgFrame(m.id, m.ts, m.text, m.replyTo ?: ""))
+        }
+    }
+
+    private fun offlineNotice() =
+        onNotice("They aren't linked right now. Texts wait and send themselves, but photos, video and VOX need you both online: tap Retry when they are.")
+
     // ---------- Naming ----------
 
-    fun displayName(): String = nickname.value.ifBlank { room.value.code }
+    fun displayName(): String = if (directPeer != null) "DIRECT LINK" else nickname.value.ifBlank { room.value.code }
 
     /** How a linked operative is reached right now: "WIFI", "NET", or null. */
     fun route(id: String): String? = (transport as? MultiTransport)?.route(id)
@@ -1173,6 +1252,7 @@ class NodeSession(
             if (kind == KIND_IMAGE) Msg(id, myId, r.name, "", ts, image = id, imgW = w, imgH = h, dm = dmTo)
             else Msg(id, myId, r.name, "", ts, voice = id, durMs = dur, dm = dmTo)
         )
+        if (directPeer != null && connected.value.isEmpty()) { setProgress(id, -1f); offlineNotice(); return }
         val seal = dmTo?.let { sealFor(it) ?: run { setProgress(id, -1f); cantReach(it); return } }
         fun wire(i: Int): ByteArray {
             val part = bytes.copyOfRange(i * CHUNK, minOf((i + 1) * CHUNK, bytes.size))
@@ -1198,6 +1278,7 @@ class NodeSession(
         val size = f.length().toInt()
         val chunks = (size + CHUNK - 1) / CHUNK
         val buf = ByteArray(CHUNK)
+        if (directPeer != null && connected.value.isEmpty()) { setProgress(id, -1f); offlineNotice(); return }
         val seal = dmTo?.let { sealFor(it) ?: run { setProgress(id, -1f); cantReach(it); return } }
         fun readPiece(raf: RandomAccessFile, i: Int): ByteArray {
             val len = minOf(CHUNK, size - i * CHUNK)
@@ -1682,6 +1763,7 @@ class NodeSession(
 
     companion object {
         private const val REPORT_TTL = 75_000L
+        private val CONTENT_TYPES = setOf("msg", "media", "dm", "react", "edit", "rcpt", "typing", "kick", "kv", "creq", "hosto")
         val REACTIONS = listOf("\uD83D\uDC4D", "\u2764\uFE0F", "\uD83D\uDE02", "\uD83D\uDE2E", "\uD83D\uDD25", "\uD83D\uDC40")
         private const val SEEN_TTL = 10 * 60_000L
         private const val VOTE_EXPIRY_MS = 5 * 60_000L

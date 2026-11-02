@@ -42,6 +42,26 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** (number of nodes, total other people connected) for the notification */
     val status = MutableStateFlow(0 to 0)
 
+    /** Contacts screen showing, and which contact's direct chat is open (contact ID). */
+    val contactsOpen = MutableStateFlow(false)
+    val directChat = MutableStateFlow<String?>(null)
+
+    /** Direct chat open on screen (its session tag), so its messages count as read. */
+    val openDirect = MutableStateFlow<String?>(null)
+
+    /** Contacts and their direct links. */
+    val contacts: Contacts = Contacts(
+        viewModelScope, prefs, people, myId, { profileName.value },
+        makeSession = { code, key, peer, created ->
+            makeSession(RoomInfo(code, key, profileName.value ?: "Operative", created), peer, contact = true)
+        },
+        onNotice = { notice.value = it },
+        onAny = { ensureService() }
+    )
+
+    /** A contact link or QR opened from outside the app, waiting for confirmation. */
+    val pendingContact = MutableStateFlow<ContactOffer?>(null)
+
     /** Recovery phrase public key (null = not set up) and when you last exported a backup. */
     val recoveryPub = MutableStateFlow(prefs.getString("rec_pub", null))
     val lastBackup = MutableStateFlow(prefs.getLong("last_backup", 0L))
@@ -51,6 +71,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         migrateOldSave()
         ensureCommitment()
         restore()
+        contacts.restore()
+        ensureService()
+    }
+
+    private fun ensureService() {
+        if (settings.value.keepAlive && (nodes.value.isNotEmpty() || contacts.list.value.isNotEmpty())) SessionService.start(getApplication())
     }
 
     // ---------- Profile ----------
@@ -66,17 +92,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------- Nodes ----------
 
-    private fun makeSession(r: RoomInfo) = NodeSession(
+    private fun makeSession(r: RoomInfo, peer: (() -> String)? = null, contact: Boolean = false): NodeSession = NodeSession(
         app = getApplication(), scope = viewModelScope, prefs = prefs, store = store,
         vault = vault, people = people, myId = myId, myPub = myPub, ecdh = ecdh, settings = settings, initial = r,
-        onChanged = { persist(); refreshStatus() },
+        onChanged = { if (!contact) { persist(); refreshStatus() } },
         onNotice = { notice.value = it },
-        onLeft = { removeSession(it) },
-        viewing = { t -> active.value?.tag == t },
+        onLeft = { if (!contact) removeSession(it) },
+        viewing = { t -> active.value?.tag == t || openDirect.value == t },
         recovery = { commitment() },
         myChain = { chain() },
-        onSuccession = { c -> viewModelScope.launch(Dispatchers.Default) { runCatching { applySuccession(c) } } }
+        onSuccession = { c -> viewModelScope.launch(Dispatchers.Default) { runCatching { applySuccession(c) } } },
+        directPeer = peer,
+        onContactRequest = { src, from, n, secret, via -> runCatching { contacts.onRequest(src, from, n, secret, via) } },
+        onPeersChanged = { src, ids -> if (peer != null) runCatching { contacts.onDirectPeers(src, ids) } }
     )
+
+    fun offerContact(o: ContactOffer?) { if (o != null) pendingContact.value = o }
 
     /** An invite opened from a link or scanned QR, waiting for the user to confirm. */
     val pendingInvite = MutableStateFlow<Invite?>(null)
@@ -124,7 +155,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         nodes.value = rest
         if (active.value === s) select(rest.lastOrNull())
         persist(); refreshStatus()
-        if (rest.isEmpty()) SessionService.stop(getApplication())
+        if (rest.isEmpty() && contacts.list.value.isEmpty()) SessionService.stop(getApplication())
     }
 
     private fun entry(r: RoomInfo) = JSONObject().put("code", r.code).put("pw", r.password)
@@ -179,7 +210,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Should the background service be running? */
     fun wantsSession(): Boolean =
-        nodes.value.isNotEmpty() || (prefs.getString("nodes", "[]") ?: "[]").length > 2
+        nodes.value.isNotEmpty() || (prefs.getString("nodes", "[]") ?: "[]").length > 2 || contacts.list.value.isNotEmpty()
 
     // ---------- Settings ----------
 
@@ -187,7 +218,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val keepChanged = s.keepAlive != settings.value.keepAlive
         val netChanged = s.internet != settings.value.internet
         settings.value = s
-        if (netChanged) nodes.value.forEach { runCatching { it.applyInternet(s.internet) } }
+        if (netChanged) (nodes.value + contacts.allSessions()).forEach { runCatching { it.applyInternet(s.internet) } }
         SettingsStore.save(prefs, s)
         if (keepChanged && nodes.value.isNotEmpty()) {
             if (s.keepAlive) SessionService.start(getApplication()) else SessionService.stop(getApplication())
@@ -257,7 +288,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             if (l.new == myId) continue
             val key = "${l.old}>${l.new}"
             if (l.old != myId && people.successors.value[l.old] != l.new) people.succeed(l.old, l.new)
-            nodes.value.forEach { s ->
+            if (l.old != myId) contacts.onSuccession(l.old, l.new)
+            (nodes.value + contacts.sessions.value.values).forEach { s ->
                 val dk = "$key@${s.tag}"
                 val fresh = synchronized(succLock) {
                     val done = prefs.getStringSet("succ_done", emptySet()) ?: emptySet()
@@ -270,8 +302,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------- Backup, restore, move ----------
 
-    private val globalKeys = listOf("profile_name", "nodes", "active_tag", "rec_pub", "succ_chain", "succ_done") + PeopleBook.KEYS
-    private val nodePrefixes = listOf("host_", "hostpin_", "hostcert_", "hostts_", "nick_", "mute_", "bans_", "excl_", "bundles_", "prev_", "s_")
+    private val globalKeys = listOf("profile_name", "nodes", "active_tag", "rec_pub", "succ_chain", "succ_done",
+        Contacts.KEY_LIST, Contacts.KEY_REQ, Contacts.KEY_BLOCK) + PeopleBook.KEYS
+    private val nodePrefixes = listOf("host_", "hostpin_", "hostcert_", "hostts_", "nick_", "mute_", "bans_", "excl_", "bundles_", "prev_", "s_", "dlv_")
 
     /** Everything worth carrying to a new phone. Never includes keys: this phone's keys stay on this phone. */
     private fun snapshot(includeHistory: Boolean): JSONObject {
@@ -293,7 +326,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             .put("at", System.currentTimeMillis())
         if (includeHistory) {
             val h = JSONObject()
-            nodes.value.forEach { s -> store.readRaw(s.tag)?.let { h.put(s.tag, it) } }
+            (nodes.value + contacts.sessions.value.values).forEach { s -> store.readRaw(s.tag)?.let { h.put(s.tag, it) } }
             o.put("history", h)
         }
         return o
@@ -336,11 +369,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         ensureCommitment()
         profileName.value = prefs.getString("profile_name", null)
         restore()
+        contacts.restore()
+        ensureService()
     }
 
     /** An encrypted backup file's bytes. The file can also vouch for your next phone (see Succession). */
     suspend fun exportBackup(pass: String, includeHistory: Boolean): ByteArray = withContext(Dispatchers.Default) {
-        nodes.value.forEach { runCatching { it.saveNow() } }
+        (nodes.value + contacts.sessions.value.values).forEach { runCatching { it.saveNow() } }
         val (bsk, bpk) = Schnorr.newKey()
         val dts = System.currentTimeMillis()
         val dsig = Identity.sign(Succession.delegationData(myId, Schnorr.hex(bpk), dts))
@@ -454,7 +489,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun sendMove(offer: MoveOffer, includeHistory: Boolean): String? = withContext(Dispatchers.IO) {
         if (offer.id == myId) return@withContext "That's this phone's own code."
         try {
-            nodes.value.forEach { runCatching { it.saveNow() } }
+            (nodes.value + contacts.sessions.value.values).forEach { runCatching { it.saveNow() } }
             val cert = Succession.device(myId, myPub, offer.id, offer.pub, false) { Identity.sign(it) }
             val o = snapshot(includeHistory).put("cert", cert)
             val key = SecretKeySpec(offer.secret, "AES")
@@ -484,6 +519,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val list = nodes.value
             nodes.value = emptyList(); active.value = null
             list.forEach { runCatching { it.close() } }
+            contacts.stopAll()
             SessionService.stop(getApplication())
             runCatching { store.deleteAll() }; runCatching { vault.deleteAll() }
             prefs.edit().clear().commit()
@@ -497,5 +533,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         nodes.value.forEach { runCatching { it.close() } }
+        contacts.stopAll()
     }
 }

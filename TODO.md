@@ -18,6 +18,7 @@
 - [x] Replies, copy, timestamps with CYCLE date dividers
 - [x] **Internet link (first version):** nodes now work across the internet as well as WiFi. Phones find each other through public Nostr relays (they only see encrypted notes under a hash of the node code), then link directly with WebRTC. WiFi is preferred when both phones share it. Operatives list shows VIA WIFI or VIA NET. Settings > LINK > Internet link (on by default; restart to apply).
 - [x] **QR invites + host verification:** INVITE shows a QR code with the node code, access key and the host's fingerprint, plus a SHARE LINK button (cybertxts:// link opens the app). LINK TO NODE > SCAN QR INVITE. Joining from a QR or link pins the host, so nobody else can claim to be host. Operatives list shows ★ HOST · VERIFIED.
+- [x] **Contacts + direct links:** Contacts (nodes menu, or the home screen) lists 1-to-1 links that work with no shared node: photos, VOX, video, receipts, typing, reactions, edit/retract all work. Add by scanning each other's code in person (✓ VERIFIED), from a node (long-press a message > ADD CONTACT, or the Star Map card), or by sharing a contact link (single use, 7 days, you approve it). Texts sent while they're offline queue and send themselves when you're both online. Contact card: fingerprint, verify, private note, nickname, remove, block. Included in backups and phone moves; follows someone who moves phones.
 - [x] **Look-alike warning:** a new ID using the callsign of someone you already know shows "⚠ NEW OPERATIVE · NOT THE VEGA YOU KNOW" in the log, Operatives list and Star Map card (with both fingerprints). "I know them" stops the warning.
 - [x] **Full fingerprints:** 32-character fingerprint on every operative card and in Settings, to compare in person.
 - [x] **Move to a new phone:** new phone shows a QR (fresh install > MOVE FROM MY OLD PHONE); old phone scans it (Settings > Backup & devices). Nodes, access keys, contacts, settings and (optionally) the log move over the same WiFi, signed by the old phone. Old phone then offers to erase itself.
@@ -78,6 +79,20 @@
 - [ ] Remove someone over NET: key rotates; a phone that was offline catches up when it comes back
 - [ ] Settings > Internet link OFF, restart: only WiFi links remain
 - [ ] Note which network combinations fail to link (some mobile carriers and work/school WiFi block direct links)
+
+## Test contacts (update ALL phones together)
+- [ ] A: Contacts > + ADD shows a QR; B: Contacts > + ADD > SCAN THEIR CODE: both list each other within ~30 s; B shows ✓ VERIFIED; A taps Verify and scans B to verify too
+- [ ] Direct chat with no shared node: text, IMG, VOX, VID, reactions, READ marks, TRANSMITTING…
+- [ ] Turn B's WiFi and data off, send 2 texts from A: "QUEUED" and "Pending: 2 messages"; B back online: they arrive, marks turn ✓✓
+- [ ] From a node: long-press someone's message > ADD CONTACT; they see CONTACT REQUEST and ACCEPT
+- [ ] SHARE CONTACT LINK into another app; the other phone taps it, confirms; you get a request to accept; the same link can't be used twice
+- [ ] Contact card: private note survives a restart; Remove deletes the direct log; Block stops their requests
+- [ ] Notification for a direct message says "NAME · DIRECT LINK"
+- [ ] Backup / move to a new phone: contacts and direct logs come across; the contact sees "MOVED TO A NEW DEVICE" in your direct chat
+
+## Contacts follow-ups
+- [ ] Each direct link keeps its own relay connections; with many contacts, share one connection to save battery
+- [ ] Photos / VOX / video in a direct link need both online (texts queue); queue media too
 
 ## Test identity + security round (update ALL phones together)
 - [ ] Look-alike: on a spare phone, pick the SAME callsign as an existing operative and link: everyone sees the ⚠ warning; "I know them" clears it

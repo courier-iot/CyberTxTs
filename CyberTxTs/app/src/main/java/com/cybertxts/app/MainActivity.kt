@@ -89,6 +89,7 @@ class MainActivity : FragmentActivity() {
         super.onCreate(savedInstanceState)
         val vm = (application as CyberApp).chatVm()   // one brain for the whole app, kept alive by the service
         vm.offerInvite(InviteLink.parse(intent?.dataString))
+        vm.offerContact(ContactLink.parse(intent?.dataString))
         // Pick the colours before the first frame so there's no flash of the wrong theme
         val systemDark = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
         val startDark = when (vm.settings.value.theme) { "light" -> false; "system" -> systemDark; else -> true }
@@ -134,6 +135,7 @@ class MainActivity : FragmentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         (application as CyberApp).chatVm().offerInvite(InviteLink.parse(intent.dataString))
+        (application as CyberApp).chatVm().offerContact(ContactLink.parse(intent.dataString))
     }
 
     override fun onStart() {
@@ -160,11 +162,16 @@ fun AppRoot(vm: ChatViewModel) {
     val active by vm.active.collectAsStateWithLifecycle()
     val notice by vm.notice.collectAsStateWithLifecycle()
     var showNew by remember { mutableStateOf(false) }
+    val contactsOpen by vm.contactsOpen.collectAsStateWithLifecycle()
+    val directChat by vm.directChat.collectAsStateWithLifecycle()
 
     val nm = name
     val act = active
+    val dc = directChat
     when {
         nm == null -> NameScreen(vm) { vm.setProfileName(it) }
+        dc != null -> DirectChatRoot(vm, dc)
+        contactsOpen -> ContactsRoot(vm)
         act == null || showNew -> HomeScreen(vm, nm, canCancel = nodes.isNotEmpty() && act != null) { showNew = false }
         else -> NodeShell(vm, nodes, act) { showNew = true }
     }
@@ -192,6 +199,8 @@ fun AppRoot(vm: ChatViewModel) {
             dismissButton = { TextButton(onClick = { vm.pendingInvite.value = null }) { Text("CANCEL", fontFamily = Mono, color = Holo.Muted) } }
         )
     }
+
+    if (nm != null) PendingContactDialog(vm)
 
     val n = notice
     if (n != null) {
@@ -412,6 +421,8 @@ fun HomeScreen(vm: ChatViewModel, alias: String, canCancel: Boolean, onDone: () 
                 Spacer(Modifier.weight(1f))
                 MonoLabel(opTag(alias, vm.myId).replace("//", " · OP-ID "))
                 Spacer(Modifier.width(8.dp))
+                GhostButton("Contacts", description = "Contacts", color = Holo.Primary) { vm.contactsOpen.value = true }
+                Spacer(Modifier.width(6.dp))
                 GhostButton("SET", description = "Settings") { showSettings = true }
             }
             Spacer(Modifier.height(18.dp))
@@ -537,6 +548,11 @@ fun NodeShell(vm: ChatViewModel, nodes: List<NodeSession>, active: NodeSession, 
     var showConstellation by remember { mutableStateOf(false) }
     val ctx = LocalContext.current
     val alias by vm.profileName.collectAsStateWithLifecycle()
+    val contactSessions by vm.contacts.sessions.collectAsStateWithLifecycle()
+    var contactUnread by remember { mutableStateOf(0) }
+    LaunchedEffect(contactSessions) {
+        while (true) { contactUnread = contactSessions.values.sumOf { it.unread.value }; delay(2_000) }
+    }
 
     // Ask once for permission to show notifications (Android 13+)
     val notifLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
@@ -606,6 +622,11 @@ fun NodeShell(vm: ChatViewModel, nodes: List<NodeSession>, active: NodeSession, 
                             scope.launch { drawerState.close() }; onNew()
                         }
                         Spacer(Modifier.height(8.dp))
+                        GhostButton(if (contactUnread > 0) "Contacts · $contactUnread" else "Contacts", Modifier.fillMaxWidth(),
+                            color = if (contactUnread > 0) Holo.Accent else Holo.Primary) {
+                            scope.launch { drawerState.close() }; vm.contactsOpen.value = true
+                        }
+                        Spacer(Modifier.height(8.dp))
                         GhostButton("Constellation", Modifier.fillMaxWidth(), color = Holo.Primary) {
                             scope.launch { drawerState.close() }; showConstellation = true
                         }
@@ -622,7 +643,13 @@ fun NodeShell(vm: ChatViewModel, nodes: List<NodeSession>, active: NodeSession, 
         key(active.tag) {
             ChatScreen(
                 active, onOpenMenu = { scope.launch { drawerState.open() } }, onOpenSettings = { showSettings = true },
-                alsoIn = { id -> nodes.filter { it !== active && id in it.memberIds() }.map { it.displayName() } }
+                alsoIn = { id -> nodes.filter { it !== active && id in it.memberIds() }.map { it.displayName() } },
+                isContact = { vm.contacts.isContact(it) },
+                onAddContact = { id ->
+                    val ok = vm.contacts.requestViaNode(active, id)
+                    Toast.makeText(ctx, if (ok) "Contact request sent. They need to accept." else "They need to be linked right now to add them.",
+                        Toast.LENGTH_SHORT).show()
+                }
             )
         }
     }
@@ -746,7 +773,10 @@ fun MakeHostDialog(vm: NodeSession, id: String, name: String, onClose: () -> Uni
 @Composable
 fun ChatScreen(
     vm: NodeSession, onOpenMenu: () -> Unit, onOpenSettings: () -> Unit,
-    alsoIn: (String) -> List<String> = { emptyList() }
+    alsoIn: (String) -> List<String> = { emptyList() },
+    direct: DirectInfo? = null,
+    isContact: (String) -> Boolean = { false },
+    onAddContact: (String) -> Unit = {}
 ) {
     var tab by remember { mutableStateOf("chat") }
     val room by vm.room.collectAsStateWithLifecycle()
@@ -957,7 +987,7 @@ fun ChatScreen(
     val pending = votes.values.firstOrNull {
         it.target != vm.myId && vm.myId !in it.yes && vm.myId !in it.no && it.target !in skipped
     }
-    if (pending != null) {
+    if (pending != null && direct == null) {
         val who = known[pending.target] ?: "an operative"
         AlertDialog(
             onDismissRequest = { skipped = skipped + pending.target },
@@ -976,6 +1006,19 @@ fun ChatScreen(
             Modifier.fillMaxWidth().background(Holo.Panel.copy(alpha = 0.8f)).padding(start = 2.dp, end = 10.dp, top = 8.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            if (direct != null) {
+                IconTextButton("‹", "Back to contacts", Holo.Primary, onOpenMenu)
+                val dn = nicks[direct.peer] ?: known[direct.peer] ?: vm.people.alias(direct.peer, "Contact")
+                Column(Modifier.weight(1f).clickable(role = Role.Button, onClick = direct.onCard)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(dn, maxLines = 1, fontWeight = FontWeight.Bold, fontSize = 19.sp, color = Holo.Ink)
+                        if (direct.verified) { Spacer(Modifier.width(8.dp)); MonoLabel("\u2713 VERIFIED", Holo.Primary, size = 10) }
+                    }
+                    MonoLabel(opTag(vm.people.alias(direct.peer, dn), direct.peer) + " · DIRECT LINK · " +
+                        (if (peers > 0) "VIA " + (vm.route(direct.peer) ?: "LINK") else "OFFLINE"))
+                }
+                Orbit(26.dp, Holo.Primary, spin = peers > 0)
+            } else {
             IconTextButton("≡", "Open nodes menu", Holo.Primary, onOpenMenu)
             Column(Modifier.weight(1f)) {
                 Text(title, maxLines = 1,
@@ -991,36 +1034,46 @@ fun ChatScreen(
                 contentPadding = PaddingValues(horizontal = 12.dp), modifier = Modifier.heightIn(min = 44.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Holo.Accent, contentColor = Holo.Void)
             ) { Text("INVITE", fontFamily = Mono, fontSize = 13.sp, letterSpacing = 0.08.em) }
+            }
             Box {
                 IconTextButton("⋮", "More options", Holo.Primary) { menuOpen = true }
                 DropdownMenu(
                     expanded = menuOpen, onDismissRequest = { menuOpen = false },
                     modifier = Modifier.background(Holo.Panel)
                 ) {
-                    DropdownMenuItem(text = { Text("OPERATIVES (${peers + 1})", fontFamily = Mono) },
+                    if (direct != null) DropdownMenuItem(text = { Text("CONTACT CARD", fontFamily = Mono) },
+                        onClick = { menuOpen = false; direct.onCard() })
+                    if (direct == null) DropdownMenuItem(text = { Text("OPERATIVES (${peers + 1})", fontFamily = Mono) },
                         onClick = { menuOpen = false; showMembers = true })
                     DropdownMenuItem(text = { Text("LINK DIAGNOSTICS", fontFamily = Mono) },
                         onClick = { menuOpen = false; showDiag = true })
                     DropdownMenuItem(text = { Text(if (mutedNode) "UNMUTE ALERTS" else "MUTE ALERTS", fontFamily = Mono) },
                         onClick = { menuOpen = false; vm.setMuted(!mutedNode) })
+                    if (direct == null) {
                     DropdownMenuItem(text = { Text("RENAME NODE", fontFamily = Mono) },
                         onClick = { menuOpen = false; showRename = true })
                     DropdownMenuItem(text = { Text("SETTINGS", fontFamily = Mono) },
                         onClick = { menuOpen = false; onOpenSettings() })
                     DropdownMenuItem(text = { Text("UNLINK", fontFamily = Mono, color = Holo.Danger) },
                         onClick = { menuOpen = false; confirmLeave = true })
+                    }
                 }
             }
         }
         HorizontalDivider(color = Holo.Primary.copy(alpha = 0.35f))
-        Box(Modifier.background(Holo.Panel.copy(alpha = 0.6f)).padding(horizontal = 12.dp, vertical = 8.dp)) {
+        if (direct == null) Box(Modifier.background(Holo.Panel.copy(alpha = 0.6f)).padding(horizontal = 12.dp, vertical = 8.dp)) {
             ChoiceRow(listOf("chat" to "Chat", "map" to "Star map"), tab) { tab = it }
+        } else {
+            MonoLabel("SEALED 1-TO-1 · NO NODE NEEDED · WIFI OR NET", Holo.InkDim, size = 10,
+                modifier = Modifier.fillMaxWidth().background(Holo.Theirs).padding(horizontal = 14.dp, vertical = 6.dp))
         }
 
         if (tab == "chat") {
 
         if (peers == 0) {
             val (text, color) = when {
+                direct != null ->
+                    "They aren't linked right now. Texts you send wait here and go out by themselves when you're both online." to Holo.Primary
                 room.created ->
                     "Node online and waiting. Tap INVITE to share the node code and access key with your operatives." to Holo.Primary
                 !searchedTooLong ->
@@ -1074,7 +1127,7 @@ fun ChatScreen(
                 }
                 IconTextButton("\u2715", "Close private channel", Holo.Muted) { dmPeer = null; replyingTo = null; editingId = null }
             }
-        } else {
+        } else if (direct == null) {
             val threads = (allMessages.mapNotNull { it.dm } + dmUnread.keys).distinct()
             if (threads.isNotEmpty()) {
                 Row(
@@ -1123,8 +1176,10 @@ fun ChatScreen(
                         val rc = receipts[m.id]
                         val status = when {
                             !mine || m.deleted -> ""
+                            rc == null && direct != null && vm.isDelivered(m.id) -> " · \u2713\u2713"
+                            rc == null && direct != null && peers == 0 && m.text.isNotEmpty() -> " · QUEUED"
                             rc == null -> " · \u2713"
-                            rc.second > 0 -> if (m.dm != null) " · READ" else " · READ ${rc.second}"
+                            rc.second > 0 -> if (m.dm != null || direct != null) " · READ" else " · READ ${rc.second}"
                             else -> " · \u2713\u2713"
                         }
                         MonoLabel(label + " · " + timeOf(ctx, m.ts) + kind + (if (m.edited) " · EDITED" else "") + status, tint,
@@ -1190,9 +1245,14 @@ fun ChatScreen(
                             DropdownMenuItem(text = { Text("REPLY", fontFamily = Mono) }, onClick = {
                                 menuFor = null; replyingTo = m
                             })
-                            if (!mine && dmPeer == null) {
+                            if (!mine && dmPeer == null && direct == null) {
                                 DropdownMenuItem(text = { Text("MESSAGE PRIVATELY", fontFamily = Mono) }, onClick = {
                                     menuFor = null; dmPeer = m.senderId; replyingTo = null
+                                })
+                            }
+                            if (!mine && direct == null && !isContact(m.senderId)) {
+                                DropdownMenuItem(text = { Text("ADD CONTACT", fontFamily = Mono) }, onClick = {
+                                    menuFor = null; onAddContact(m.senderId)
                                 })
                             }
                             if (mine && !m.deleted && m.dm == null && m.text.isNotEmpty() && m.image == null && m.video == null && m.voice == null) {
@@ -1322,7 +1382,7 @@ fun ChatScreen(
             }
         }
         } else {
-            StarMapView(vm, alsoIn) { id -> tab = "chat"; dmPeer = id }
+            StarMapView(vm, alsoIn, isContact = isContact, onAddContact = onAddContact) { id -> tab = "chat"; dmPeer = id }
         }
     }
     }

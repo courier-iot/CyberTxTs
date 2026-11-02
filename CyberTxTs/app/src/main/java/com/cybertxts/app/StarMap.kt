@@ -103,7 +103,11 @@ private fun DrawScope.meStar(c: Offset, r: Float) {
 
 /** The STAR MAP tab inside a node. */
 @Composable
-fun StarMapView(vm: NodeSession, alsoIn: (String) -> List<String>, onMessage: (String) -> Unit = {}) {
+fun StarMapView(
+    vm: NodeSession, alsoIn: (String) -> List<String>,
+    isContact: (String) -> Boolean = { false }, onAddContact: (String) -> Unit = {},
+    onMessage: (String) -> Unit = {}
+) {
     var mesh by remember { mutableStateOf(false) }
     var snap by remember { mutableStateOf(vm.mapSnapshot()) }
     var selected by remember { mutableStateOf<String?>(null) }
@@ -232,7 +236,8 @@ fun StarMapView(vm: NodeSession, alsoIn: (String) -> List<String>, onMessage: (S
             val sel = selected?.let { byId[it] }
             if (sel != null) {
                 OperativeCard(vm, sel, hostId == vm.myId, alsoIn(sel.id), byId, Modifier.align(Alignment.BottomCenter),
-                    onMessage = { selected = null; onMessage(it) }) { selected = null }
+                    onMessage = { selected = null; onMessage(it) },
+                    isContact = isContact(sel.id), onAddContact = { onAddContact(sel.id) }) { selected = null }
             }
         }
 
@@ -294,6 +299,7 @@ private fun Stat(title: String, value: String, modifier: Modifier = Modifier) {
 fun OperativeCard(
     vm: NodeSession, p: NodeSession.MapPeer, iAmHost: Boolean, alsoIn: List<String>,
     byId: Map<String, NodeSession.MapPeer>, modifier: Modifier = Modifier, onMessage: (String) -> Unit = {},
+    isContact: Boolean = true, onAddContact: () -> Unit = {},
     onClose: () -> Unit
 ) {
     val nicks by vm.people.nicknames.collectAsStateWithLifecycle()
@@ -392,6 +398,7 @@ fun OperativeCard(
             else if (!p.host) GhostButton("Vote out", Modifier.weight(1f), color = Holo.Danger) { confirm = true }
         }
         if (iAmHost && p.linked) GhostButton("Make host", Modifier.fillMaxWidth(), color = Gold) { makeHost = true }
+        if (!isContact && p.linked) GhostButton("Add contact", Modifier.fillMaxWidth(), color = Holo.Primary) { onAddContact() }
     }
 }
 
