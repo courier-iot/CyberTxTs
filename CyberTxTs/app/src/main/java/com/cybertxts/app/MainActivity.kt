@@ -846,7 +846,12 @@ fun ChatScreen(vm: NodeSession, onOpenMenu: () -> Unit, onOpenSettings: () -> Un
         if (AppState.foreground) vm.unread.value = 0
     }
     LaunchedEffect(peers) {
-        if (peers > 0) searchedTooLong = false else { delay(20_000); searchedTooLong = true }
+        if (peers > 0) searchedTooLong = false else { delay(45_000); searchedTooLong = true }
+    }
+    // Live link status for the banner: how many public relays this phone has reached (-1 = internet link off)
+    var relays by remember { mutableStateOf(0) }
+    LaunchedEffect(Unit) {
+        while (true) { relays = vm.relayCount(); delay(3_000) }
     }
 
     fun invite() {
@@ -975,15 +980,27 @@ fun ChatScreen(vm: NodeSession, onOpenMenu: () -> Unit, onOpenSettings: () -> Un
 
         if (peers == 0) {
             val (text, color) = when {
-                room.created && !searchedTooLong ->
-                    "Node online. Tap INVITE to share the code and access key, then wait for operatives to link." to Holo.Primary
-                !room.created && !searchedTooLong ->
+                room.created ->
+                    "Node online and waiting. Tap INVITE to share the node code and access key with your operatives." to Holo.Primary
+                !searchedTooLong ->
                     "Scanning WiFi and the net for this node…" to Holo.Primary
                 else ->
-                    "No link found. Check the node code and your connection. If someone was removed recently, the access key may have rotated: ask an operative for the new one." to Holo.Danger
+                    "No link found yet. Check the node code and access key match exactly, and that the person who " +
+                        "spun it up has the app open. If someone was removed recently, the key may have rotated: " +
+                        "ask an operative for the new one." to Holo.Danger
             }
-            Text(text, style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.fillMaxWidth().padding(10.dp).openPanel(Holo.Panel, color.copy(alpha = 0.7f)).padding(10.dp))
+            val status = when {
+                relays < 0 -> "WIFI SCAN ACTIVE · INTERNET LINK OFF"
+                relays == 0 -> "WIFI SCAN ACTIVE · CONNECTING TO RELAYS…"
+                else -> "WIFI SCAN ACTIVE · RELAYS $relays/${NostrPool.DEFAULT_RELAYS.size} ONLINE"
+            }
+            Column(
+                Modifier.fillMaxWidth().padding(10.dp).openPanel(Holo.Panel, color.copy(alpha = 0.7f)).padding(10.dp)
+            ) {
+                Text(text, style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(6.dp))
+                MonoLabel(status, if (relays == 0) Holo.Accent else Holo.Primary)
+            }
         }
 
         LazyColumn(

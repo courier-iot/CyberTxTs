@@ -321,6 +321,9 @@ class NodeSession(
     /** How a linked operative is reached right now: "WIFI", "NET", or null. */
     fun route(id: String): String? = (transport as? MultiTransport)?.route(id)
 
+    /** Relays this phone is connected to for this node (-1 if the internet link is off). */
+    fun relayCount(): Int = (transport as? MultiTransport)?.relays() ?: 0
+
     fun rename(name: String) {
         val n = name.trim().take(30)
         if (n.isEmpty()) prefs.edit().remove("nick_$tag").apply()

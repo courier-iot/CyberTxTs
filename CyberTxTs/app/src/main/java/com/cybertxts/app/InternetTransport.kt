@@ -504,6 +504,8 @@ class MultiTransport(context: Context, internet: Boolean) : Transport {
     override fun ban(id: String) { lan.ban(id); net?.ban(id) }
     override fun stop() { lan.stop(); net?.stop() }
 
+    fun relays(): Int = net?.relayCount() ?: -1
+
     /** Which way each linked operative is reached: "WIFI" or "NET". */
     fun route(id: String): String? = when {
         lan.isConnected(id) -> "WIFI"
