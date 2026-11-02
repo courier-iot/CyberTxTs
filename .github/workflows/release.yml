@@ -1,0 +1,125 @@
+name: Release
+
+# Makes a signed CyberTxTs release and publishes it on the repo's Releases page.
+# Two ways to start it:
+#   1. Actions > Release > Run workflow, and type the version (like 1.0.0), or
+#   2. push a tag like v1.0.0.
+# Before the first release: the SIGNING_PASSWORD and SIGNING_KEYSTORE secrets must exist
+# (see "Make signing key"), and CyberTxTs/CHANGELOG.md needs a "## 1.0.0" section.
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, like 1.0.0'
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: CyberTxTs
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check version, notes and signing key
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          SIGNING_KEYSTORE: ${{ secrets.SIGNING_KEYSTORE }}
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+        run: |
+          set -e
+          V="${INPUT_VERSION:-$GITHUB_REF_NAME}"; V="${V#v}"
+          if ! [[ "$V" =~ ^[0-9]{1,3}\.[0-9]{1,2}\.[0-9]{1,2}$ ]]; then
+            echo "::error::The version must look like 1.0.0 (got '$V')."; exit 1
+          fi
+          if gh release view "v$V" >/dev/null 2>&1; then
+            echo "::error::Release v$V already exists. Pick a higher version."; exit 1
+          fi
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && git ls-remote --exit-code --tags origin "refs/tags/v$V" >/dev/null 2>&1; then
+            echo "::error::A tag named v$V already exists (left over from a deleted or hand-made release), so this release would point at old code. Delete it first: repo > Tags > v$V > ... > Delete tag. Or pick a higher version."; exit 1
+          fi
+          if [ -z "$SIGNING_KEYSTORE" ] || [ -z "$SIGNING_PASSWORD" ]; then
+            echo "::error::Releases must be signed with the permanent key. Add SIGNING_PASSWORD, run 'Make signing key', and save the SIGNING_KEYSTORE secret first."; exit 1
+          fi
+          # This version's notes: everything under "## V" in CHANGELOG.md, up to the next "## "
+          awk -v v="## $V" '$0==v || index($0, v" ")==1 {on=1; next} /^## /{if(on) exit} on' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          if ! grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md"; then
+            echo "::error::CHANGELOG.md has no '## $V' section. Add the release notes there first."; exit 1
+          fi
+          echo "RELEASE_VERSION=$V" >> "$GITHUB_ENV"
+          echo "$SIGNING_KEYSTORE" | base64 -d > "$RUNNER_TEMP/cybertxts.p12"
+          echo "SIGNING_KEYSTORE_PATH=$RUNNER_TEMP/cybertxts.p12" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+          build-root-directory: CyberTxTs
+
+      - name: Fetch fonts
+        run: bash ../.github/scripts/fetch-fonts.sh
+
+      - name: Build release APK
+        env:
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Check the signature and package the files
+        run: |
+          set -e
+          APK=app/build/outputs/apk/release/app-release.apk
+          [ -f "$APK" ] || { echo "::error::No signed APK was built."; exit 1; }
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$BT/apksigner" verify --print-certs "$APK" > "$RUNNER_TEMP/certs.txt"
+          CERT=$(grep -m1 'certificate SHA-256 digest' "$RUNNER_TEMP/certs.txt" | awk '{print $NF}')
+          [ -n "$CERT" ] || { echo "::error::The APK isn't signed."; exit 1; }
+          OUT="CyberTxTs-$RELEASE_VERSION.apk"
+          cp "$APK" "$OUT"
+          sha256sum "$OUT" > "$OUT.sha256"
+          SUM=$(cut -d' ' -f1 "$OUT.sha256")
+          {
+            cat "$RUNNER_TEMP/notes.md"
+            echo
+            echo "## Install"
+            echo
+            echo "Download **$OUT** below on your Android phone (Android 8 or newer) and open it. Android will ask you to allow installs from your browser or files app the first time."
+            echo
+            echo "## Check your download"
+            echo
+            echo "| | SHA-256 |"
+            echo "|---|---|"
+            echo "| APK file | \`$SUM\` |"
+            echo "| Signing certificate | \`$CERT\` |"
+            echo
+            echo "Every CyberTxTs release is signed with the same certificate. If it ever changes, don't install it."
+          } > "$RUNNER_TEMP/release.md"
+          cat "$RUNNER_TEMP/release.md"
+
+      - name: Publish the release
+        run: |
+          gh release create "v$RELEASE_VERSION" \
+            "CyberTxTs-$RELEASE_VERSION.apk" "CyberTxTs-$RELEASE_VERSION.apk.sha256" \
+            --title "CyberTxTs $RELEASE_VERSION" \
+            --notes-file "$RUNNER_TEMP/release.md" \
+            --target "$GITHUB_SHA"
+
+      - name: Remove the key copy
+        if: always()
+        run: rm -f "$RUNNER_TEMP/cybertxts.p12"
