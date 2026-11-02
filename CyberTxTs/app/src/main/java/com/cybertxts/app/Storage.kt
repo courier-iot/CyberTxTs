@@ -22,7 +22,9 @@ data class AppSettings(
     val relay: Boolean = true,       // forward frames for operatives who can't link to each other directly
     val quality: String = "standard", // default sending quality for photos and videos (a Quality key)
     val askQuality: Boolean = true,   // show the quality chooser every time
-    val theme: String = "dark"        // "dark" (Night ops), "light" (Day shift) or "system"
+    val theme: String = "dark",       // "dark" (Night ops), "light" (Day shift) or "system"
+    val readMarks: Boolean = true,    // send READ marks (off: you don't see others' either)
+    val typingSignal: Boolean = true  // send TRANSMITTING… (off: you don't see others' either)
 )
 
 object SettingsStore {
@@ -36,14 +38,16 @@ object SettingsStore {
         relay = p.getBoolean("s_relay", true),
         quality = p.getString("s_q", "standard") ?: "standard",
         askQuality = p.getBoolean("s_ask", true),
-        theme = p.getString("s_theme", "dark") ?: "dark"
+        theme = p.getString("s_theme", "dark") ?: "dark",
+        readMarks = p.getBoolean("s_read", true),
+        typingSignal = p.getBoolean("s_typing", true)
     )
 
     fun save(p: SharedPreferences, s: AppSettings) {
         p.edit().putBoolean("s_hist", s.keepHistory).putInt("s_days", s.retentionDays)
             .putBoolean("s_img", s.keepImages).putBoolean("s_vid", s.keepVideos).putBoolean("s_keep", s.keepAlive).putBoolean("s_net", s.internet).putBoolean("s_relay", s.relay)
             .putString("s_q", s.quality).putBoolean("s_ask", s.askQuality)
-            .putString("s_theme", s.theme).apply()
+            .putString("s_theme", s.theme).putBoolean("s_read", s.readMarks).putBoolean("s_typing", s.typingSignal).apply()
     }
 }
 
@@ -70,6 +74,8 @@ class HistoryStore(context: Context) {
                 .put("img", m.image ?: "").put("w", m.imgW).put("h", m.imgH)
                 .put("vid", m.video ?: "").put("dur", m.durMs).put("re", m.replyTo ?: "")
                 .put("dm", m.dm ?: "").put("ed", m.edited).put("del", m.deleted)
+                .put("pin", m.pinned).put("og", m.og).put("ogh", m.ogHave).put("eda", m.editedAt)
+                .put("poll", m.poll ?: "").put("pv", JSONObject().apply { m.votes.forEach { (k, v) -> put(k, v) } })
                 .put("rx", JSONObject().apply { m.reactions.forEach { (e, who) -> put(e, JSONArray(who.toList())) } }))
         }
         val f = file(tag)
@@ -93,6 +99,9 @@ class HistoryStore(context: Context) {
                     replyTo = it.optString("re", "").ifEmpty { null },
                     dm = it.optString("dm", "").ifEmpty { null },
                     edited = it.optBoolean("ed", false), deleted = it.optBoolean("del", false),
+                    pinned = it.optBoolean("pin", false), og = it.optLong("og", 0L), ogHave = it.optBoolean("ogh", false),
+                    editedAt = it.optLong("eda", 0L), poll = it.optString("poll", "").ifEmpty { null },
+                    votes = it.optJSONObject("pv")?.let { o -> o.keys().asSequence().associateWith { k -> o.getString(k) } } ?: emptyMap(),
                     reactions = it.optJSONObject("rx")?.let { o ->
                         o.keys().asSequence().associateWith { e ->
                             val a = o.getJSONArray(e); (0 until a.length()).map { k -> a.getString(k) }.toSet()
@@ -102,7 +111,25 @@ class HistoryStore(context: Context) {
         } catch (e: Exception) { emptyList() }
     }
 
-    @Synchronized fun delete(tag: String) { file(tag).delete() }
+    @Synchronized fun delete(tag: String) { file(tag).delete(); frames(tag).delete() }
+
+    // ---- catch-up log: a week of signed frames per node, so phones that were away can be filled in ----
+    private fun frames(tag: String) = File(ctx.filesDir, "frames_$tag.bin")
+
+    @Synchronized
+    fun saveFrames(tag: String, json: String) {
+        if (tag.isEmpty()) return
+        val f = frames(tag)
+        f.delete()
+        enc(f).openFileOutput().use { it.write(json.toByteArray()) }
+    }
+
+    @Synchronized
+    fun loadFrames(tag: String): String? {
+        val f = frames(tag)
+        if (!f.exists()) return null
+        return runCatching { enc(f).openFileInput().use { it.readBytes().toString(Charsets.UTF_8) } }.getOrNull()
+    }
 
     /** The saved log as stored (JSON text), for backups and moving phones. */
     @Synchronized
@@ -122,6 +149,6 @@ class HistoryStore(context: Context) {
 
     @Synchronized
     fun deleteAll() {
-        ctx.filesDir.listFiles { _, name -> name.startsWith("history_") }?.forEach { it.delete() }
+        ctx.filesDir.listFiles { _, name -> name.startsWith("history_") || name.startsWith("frames_") }?.forEach { it.delete() }
     }
 }

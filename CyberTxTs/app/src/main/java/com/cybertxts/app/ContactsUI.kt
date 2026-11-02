@@ -341,6 +341,11 @@ fun ContactCardScreen(vm: ChatViewModel, id: String, onMessage: () -> Unit, onCl
             shape = RectangleShape, colors = holoFieldColors(), modifier = Modifier.fillMaxWidth())
         verifyMsg?.let { InfoCard("", it) }
         HoloButton("Message", enabled = s != null, modifier = Modifier.fillMaxWidth(), onClick = onMessage)
+        val gate = rememberPermissionGate()
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            GhostButton("Voice call", Modifier.weight(1f), color = Holo.Primary) { if (s != null) gate(callPermissions(false)) { vm.calls.start(s, id, false) } }
+            GhostButton("Video call", Modifier.weight(1f), color = Holo.Primary) { if (s != null) gate(callPermissions(true)) { vm.calls.start(s, id, true) } }
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             GhostButton("Nickname", Modifier.weight(1f), color = Holo.Primary) { showNick = true }
             GhostButton(if (c.verified) "Re-verify" else "Verify", Modifier.weight(1f), color = Holo.Primary) { AppLock.holdOpen(); verifying = true }
@@ -412,7 +417,8 @@ fun DirectChatRoot(vm: ChatViewModel, id: String) {
     }
     key(s.tag) {
         ChatScreen(s, onOpenMenu = { vm.directChat.value = null }, onOpenSettings = {},
-            direct = DirectInfo(id, c.verified) { card = true })
+            direct = DirectInfo(id, c.verified) { card = true }, forwardTargets = { vm.allChats() },
+            onCall = { p, v -> vm.calls.start(s, p, v) })
     }
     if (card) ContactCardScreen(vm, id, onMessage = { card = false }) { card = false }
 }

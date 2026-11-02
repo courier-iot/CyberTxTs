@@ -28,6 +28,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
@@ -102,7 +103,7 @@ fun ConsolePage(
                 Column {
                     if (crumb != null) MonoLabel(crumb, Holo.InkDim, size = 10)
                     Text(title, fontFamily = Display, fontWeight = FontWeight.Bold, fontSize = 16.sp,
-                        letterSpacing = 0.08.em, color = Holo.Primary)
+                        letterSpacing = 0.08.em, color = Holo.Primary, modifier = Modifier.semantics { heading() })
                 }
             }
             HorizontalDivider(color = Holo.Primary.copy(alpha = 0.35f))
@@ -213,6 +214,11 @@ fun SettingsScreen(vm: ChatViewModel, onClose: () -> Unit) {
         NavRow("NETWORK",
             listOf(if (s.internet) "WiFi + internet" else "WiFi only", if (s.relay) "relaying" else "not relaying",
                 if (s.keepAlive) "background link" else "foreground only").joinToString(" · ")) { page = "network" }
+        val usageTick by vm.usageTick.collectAsStateWithLifecycle()
+        val usage by produceState<UsageTracker.Report?>(null, usageTick) {
+            value = withContext(Dispatchers.Default) { UsageTracker.report(vm.usagePrefs()) }
+        }
+        NavRow("BATTERY & DATA", usage?.let { usageSummary(it) } ?: "Reading…") { page = "usage" }
         NavRow("ALERTS", "Comm chirp" + if (AppLock.hideAlerts.collectAsStateWithLifecycle().value) " · text hidden" else "") { page = "alerts" }
         NavRow("DANGER ZONE", "Purge logs · erase this phone", Holo.Danger) { page = "danger" }
         MonoLabel("CYBERTXTS · BY STELLARITE", Holo.InkDim, size = 10, align = TextAlign.Center, modifier = Modifier.fillMaxWidth())
@@ -231,6 +237,7 @@ fun SettingsScreen(vm: ChatViewModel, onClose: () -> Unit) {
         "chats" -> ChatsPage(s, { vm.updateSettings(it) }) { page = null }
         "network" -> NetworkPage(s, { vm.updateSettings(it) }) { page = null }
         "alerts" -> AlertsPage { page = null }
+        "usage" -> UsagePage(vm) { page = null }
         "danger" -> DangerPage(vm) { page = null }
     }
 }
@@ -259,6 +266,12 @@ private fun ChatsPage(s: AppSettings, onChange: (AppSettings) -> Unit, onBack: (
             SettingRow("Keep IMG", "Off: photos are wiped when you unlink or restart.", s.keepImages) { onChange(s.copy(keepImages = it)) }
             SettingRow("Keep VID", "Off: videos are wiped when you unlink or restart.", s.keepVideos) { onChange(s.copy(keepVideos = it)) }
             Text("VOX notes are never stored. They vanish when you unlink.", style = MaterialTheme.typography.bodySmall, color = Holo.InkDim)
+        }
+        SettingsSection("PRIVACY") {
+            SettingRow("Send read marks", "Off: others don't see READ from you, and you don't see theirs.", s.readMarks) { onChange(s.copy(readMarks = it)) }
+            SettingRow("Send typing signal", "Off: others don't see TRANSMITTING… from you, and you don't see theirs.", s.typingSignal) {
+                onChange(s.copy(typingSignal = it))
+            }
         }
         SettingsSection("TRANSMISSION QUALITY") {
             ChoiceRow(Quality.presets.map { it.key to it.label }, s.quality) { onChange(s.copy(quality = it)) }

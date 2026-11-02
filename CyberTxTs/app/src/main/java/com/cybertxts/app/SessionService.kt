@@ -14,6 +14,8 @@ import android.os.PowerManager
 import android.media.AudioAttributes
 import android.net.Uri
 import androidx.core.app.NotificationCompat
+import androidx.core.app.RemoteInput
+import android.content.BroadcastReceiver
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
@@ -75,7 +77,7 @@ object Notifier {
             .build()
 
     @Synchronized
-    fun message(ctx: Context, node: String, sender: String, text: String) {
+    fun message(ctx: Context, node: String, sender: String, text: String, tag: String = "", dm: String? = null) {
         unread++
         val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val hidden = NotificationCompat.Builder(ctx, CH_MESSAGES)
@@ -94,6 +96,30 @@ object Notifier {
             .setAutoCancel(true)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)   // text hidden on the lock screen
             .setPublicVersion(hidden)
+        // Reply / mark read / mute right from the notification (not while app lock is on: that would bypass it)
+        if (tag.isNotEmpty() && !AppLock.enabled.value) {
+            fun action(kind: String, req: Int) = PendingIntent.getBroadcast(
+                ctx, req,
+                Intent(ctx, NotifyActions::class.java).setAction("cybertxts.$kind").putExtra("tag", tag).putExtra("dm", dm ?: ""),
+                PendingIntent.FLAG_UPDATE_CURRENT or (if (kind == "reply") PendingIntent.FLAG_MUTABLE else PendingIntent.FLAG_IMMUTABLE)
+            )
+            val input = RemoteInput.Builder(NotifyActions.KEY_TEXT).setLabel("Transmit to $sender").build()
+            n.addAction(NotificationCompat.Action.Builder(R.drawable.ic_stat_node, "Reply", action("reply", 11))
+                .addRemoteInput(input).setAllowGeneratedReplies(false).setShowsUserInterface(false).build())
+            n.addAction(NotificationCompat.Action.Builder(R.drawable.ic_stat_node, "Mark read", action("read", 12)).build())
+            if (dm == null) n.addAction(NotificationCompat.Action.Builder(R.drawable.ic_stat_node, "Mute node", action("mute", 13)).build())
+        }
+        runCatching { nm.notify(ID_MESSAGES, n.build()) }
+    }
+
+    /** After replying from the notification: show it was sent, quietly. */
+    @Synchronized
+    fun replied(ctx: Context, text: String) {
+        unread = 0
+        val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val n = NotificationCompat.Builder(ctx, CH_MESSAGES)
+            .setSmallIcon(R.drawable.ic_stat_node).setContentTitle("Transmitted").setContentText(text)
+            .setOnlyAlertOnce(true).setSilent(true).setTimeoutAfter(4_000).setContentIntent(openApp(ctx)).setAutoCancel(true)
             .build()
         runCatching { nm.notify(ID_MESSAGES, n) }
     }
@@ -199,4 +225,30 @@ class SessionService : Service() {
             ctx.stopService(Intent(ctx, SessionService::class.java))
         }
     }
+}
+
+
+/** Handles Reply / Mark read / Mute from a message notification. */
+class NotifyActions : BroadcastReceiver() {
+    override fun onReceive(ctx: Context, intent: Intent) {
+        val app = ctx.applicationContext as? CyberApp ?: return
+        val vm = app.chatVm()
+        val tag = intent.getStringExtra("tag") ?: return
+        val dm = intent.getStringExtra("dm")?.ifEmpty { null }
+        val s = vm.sessionByTag(tag) ?: return
+        when (intent.action) {
+            "cybertxts.reply" -> {
+                val text = RemoteInput.getResultsFromIntent(intent)?.getCharSequence(KEY_TEXT)?.toString()?.trim().orEmpty()
+                if (text.isNotEmpty()) {
+                    s.send(text, null, dm)
+                    s.markRead(dm); s.unread.value = 0
+                    Notifier.replied(ctx, text)
+                }
+            }
+            "cybertxts.read" -> { s.markRead(dm); s.unread.value = 0; Notifier.clearMessages(ctx) }
+            "cybertxts.mute" -> { s.setMuted(true); Notifier.clearMessages(ctx) }
+        }
+    }
+
+    companion object { const val KEY_TEXT = "reply_text" }
 }

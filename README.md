@@ -9,6 +9,9 @@
 - **Encryption:** everything is end-to-end encrypted with a key derived from the access key. After someone is removed (host kick or majority vote), the access key rotates automatically for everyone else; offline operatives catch up when they reconnect.
 - **Media:** IMG (Saver / Standard / High / Original), VID up to 5 minutes (360p / 480p / 720p), VOX notes up to 2 minutes (never stored). TX/RX progress; every piece is verified.
 - **Internet link:** phones find each other through public Nostr relays (they only ever see encrypted notes under a hash of the node code), then talk directly over WebRTC. WiFi is used instead when both phones share it.
+- **Calls:** 1-to-1 voice and video calls, end-to-end encrypted. Reply from notifications, polls, scheduled messages, drafts, privacy switches.
+- **Everyday:** search, disappearing messages, @mentions, pins, media gallery, forwarding, original-quality video on request, battery & data tracker.
+- **Catch-up:** missed messages, photos and reactions are filled in by other operatives when you relink (signed, so they can't be altered).
 - **Contacts:** direct 1-to-1 links with no shared node needed, added in person (verified), from a node, or by link; texts queue until delivered.
 - **Identity that survives a new phone:** move phone-to-phone, restore an encrypted backup, or recover with a 16-word phrase; operatives keep your nickname, private channels and host role, and a lost phone can be locked out.
 - **App lock:** PIN or fingerprint, privacy screen, hidden alert text. Look-alike callsigns are flagged.
@@ -52,6 +55,11 @@ CyberTxTs/                              Android project (Kotlin + Jetpack Compos
     Lock.kt             app lock (PIN, biometrics, privacy screen)
     Contacts.kt         contacts, contact requests, QR / link offers, direct links
     ContactsUI.kt       contacts list, add contact, contact card, direct chat
+    ChatExtras.kt       disappearing timer, media gallery, forwarding, search all chats
+    Calls.kt            voice / video calls (WebRTC media, signalling, ringing)
+    CallUI.kt           call screen, permission gate
+    Battery.kt          battery & data tracker (readings and report)
+    UsageUI.kt          Settings > Battery & data page
     Theme.kt            Night ops / Day shift colours, fonts, open-corner panels, orbit mark, starfield
   app/src/main/res/     planet icon, splash, notification icon, comm chirp sound
 TODO.md                 to-do list, test checklists, signing steps

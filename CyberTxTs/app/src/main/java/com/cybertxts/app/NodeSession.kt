@@ -43,7 +43,13 @@ data class Msg(
     val dm: String? = null,          // private thread: the other operative's ID (null = whole node)
     val reactions: Map<String, Set<String>> = emptyMap(),   // emoji -> who reacted
     val edited: Boolean = false,
-    val deleted: Boolean = false
+    val deleted: Boolean = false,
+    val pinned: Boolean = false,
+    val og: Long = 0L,               // video: size of the original the sender kept (0 = none)
+    val ogHave: Boolean = false,     // video: this phone holds the original
+    val editedAt: Long = 0L,
+    val poll: String? = null,        // poll: JSON array of options (text is the question)
+    val votes: Map<String, String> = emptyMap()   // poll: voter id -> "choice:ts"
 )
 
 /** created = true when this phone built the node (the creator is its host). */
@@ -104,7 +110,9 @@ class NodeSession(
     val directPeer: (() -> String)? = null,
     /** A contact request arrived here: (this session, from, their callsign, link secret, how they found you). */
     private val onContactRequest: (NodeSession, String, String, ByteArray, String) -> Unit = { _, _, _, _, _ -> },
-    private val onPeersChanged: (NodeSession, Set<String>) -> Unit = { _, _ -> }
+    private val onPeersChanged: (NodeSession, Set<String>) -> Unit = { _, _ -> },
+    /** Call signalling (offer / answer / end) for this node or contact. */
+    private val onCall: (NodeSession, JSONObject) -> Unit = { _, _ -> }
 ) {
     val tag: String = Crypto.roomTag(initial.code)
     private val myEk: ByteArray = ecdh.second
@@ -164,6 +172,9 @@ class NodeSession(
         val history = if (s.keepHistory) withContext(Dispatchers.IO) { store.load(tag, s.retentionDays) } else emptyList()
         synchronized(seen) { seen.clear(); history.forEach { seen.add(it.id) } }
         messages.value = history
+        if (s.keepHistory) withContext(Dispatchers.IO) { loadFrameLog() }
+        if (!prefs.contains("joined_$tag")) prefs.edit().putLong("joined_$tag", System.currentTimeMillis()).apply()
+        loadMediaQueue()
         // Photos: honour the "keep photos" and history settings
         withContext(Dispatchers.IO) {
             if (!s.keepHistory) vault.delete(tag) else vault.prune(tag, keepKeys(history, s))
@@ -198,6 +209,8 @@ class NodeSession(
                 sendPing()
                 purgeVotes()
                 sweepTransfers()
+                sweepExpired()
+                sendDueScheduled()
                 val pending = synchronized(banned) {
                     banned.any { it !in excluded && evidence[it]?.isNotEmpty() == true }
                 }
@@ -216,7 +229,7 @@ class NodeSession(
         transport?.stop(); transport = null
         synchronized(voices) { voices.clear() }
         dropAssemblies()
-        prefs.edit().remove("excl_$t").remove("bundles_$t").remove("prev_$t").remove("nick_$t").remove("mute_$t").remove("hostcert_$t").remove("hostts_$t").remove("dlv_$t").apply()
+        prefs.edit().remove("excl_$t").remove("bundles_$t").remove("prev_$t").remove("nick_$t").remove("mute_$t").remove("hostcert_$t").remove("hostts_$t").remove("dlv_$t").remove("joined_$t").remove("mq_$t").remove("ttl_$t").remove("ttlts_$t").remove("ttlcert_$t").remove("sched_$t").apply()
         scope.launch(Dispatchers.IO) {
             if (eraseHistory || !s.keepHistory) store.delete(t) else store.save(t, snapshot, s.retentionDays)
             if (eraseHistory || !s.keepHistory) vault.delete(t) else vault.prune(t, keepKeys(snapshot, s))
@@ -246,7 +259,11 @@ class NodeSession(
         val ts = System.currentTimeMillis()
         val re = replyTo ?: ""
         add(Msg(id, myId, r.name, t, ts, replyTo = replyTo))
-        scope.launch(Dispatchers.Default) { transport?.send(msgFrame(id, ts, t, re)) }
+        scope.launch(Dispatchers.Default) {
+            val f = msgFrame(id, ts, t, re)
+            logFrame("msg", id, myId, ts, "", f)
+            transport?.send(f)
+        }
     }
 
     private fun msgFrame(id: String, ts: Long, t: String, re: String): ByteArray {
@@ -286,7 +303,9 @@ class NodeSession(
         val fresh = ids - before
         if (fresh.isNotEmpty()) scope.launch(Dispatchers.Default) {
             delay(800); shareCertificates(fresh)
-            if (directPeer != null) { delay(700); flushOutbox() }
+            delay(700)
+            fresh.forEach { requestSync(it) }
+            if (directPeer != null) { flushOutbox(); flushMediaQueue() }
         }
         onPeersChanged(this, ids)
         if (ids != before) announce()
@@ -315,6 +334,13 @@ class NodeSession(
                 "typing" -> handleTyping(j)
                 "react" -> handleReact(j)
                 "edit" -> handleEdit(j)
+                "syn" -> handleSync(j)
+                "ttl" -> handleTtl(j)
+                "poll" -> handlePoll(j)
+                "pvote" -> handleVote2(j)
+                "call" -> onCall(this, j)
+                "pin" -> handlePin(j)
+                "ogreq" -> handleOriginalRequest(j)
                 "succ" -> j.optJSONObject("c")?.let { c -> if (c.toString().length < 12_000) onSuccession(c) }
                 "hosto" -> handleHostOver(j)
                 "creq" -> handleContactRequest(j)
@@ -331,11 +357,13 @@ class NodeSession(
                 "rekey" -> scope.launch(Dispatchers.Default) { acceptBundle(j) }
             }
             val onlyTo = when (type) {
-                "dm", "media", "creq" -> j.optString("to").ifEmpty { null }
+                "dm", "media", "creq", "ogreq", "call" -> j.optString("to").ifEmpty { null }
                 "mc" -> mediaTo[j.optString("id")]
                 else -> null
             }
-            if (origin != null) maybeRelay(origin, bytes, onlyTo)
+            // Originals are sent to one requester only: never pass them on
+            val oneOff = (type == "media" || type == "mc") && j.optString("id").endsWith("-og")
+            if (origin != null && !oneOff) maybeRelay(origin, bytes, onlyTo)
         } catch (_: Exception) {}
     }
 
@@ -356,6 +384,7 @@ class NodeSession(
         val re = j.optString("re", "")
         if (re.length > 64) return
         if (!verified(j, "msg|$tag|$id|$sid|$ts|$text|$re")) return
+        logFrame("msg", id, sid, ts, "", j.toString().toByteArray())
         people.seen(sid, n)
         val shown = people.alias(sid, n)
         known.update { it + (sid to shown) }
@@ -364,8 +393,16 @@ class NodeSession(
         if (sid != myId) pendingDelivered.add(id)       // a resent copy still gets a delivery mark back
         if (sid != myId && isNew) {
             if (!(AppState.foreground && viewing(tag))) unread.update { it + 1 }
-            if (!AppState.foreground && !muted.value) Notifier.message(app, displayName(), people.label(sid, n), text)
+            val mention = mentionsMe(text)
+            if (!AppState.foreground && (!muted.value || mention))
+                Notifier.message(app, displayName(), (if (mention) "@YOU · " else "") + people.label(sid, n), text, tag, null)
         }
+    }
+
+    /** Does [text] mention me (@ followed by my callsign)? */
+    fun mentionsMe(text: String): Boolean {
+        val me = room.value.name.trim()
+        return me.isNotEmpty() && Regex("@" + Regex.escape(me) + "(?![\\p{L}\\p{N}])", RegexOption.IGNORE_CASE).containsMatchIn(text)
     }
 
     private fun handleHi(j: JSONObject) {
@@ -596,19 +633,23 @@ class NodeSession(
             val (eph, ct) = Crypto.wrapFor(pub, to, body, "dm|$tag|$id".toByteArray())
             val e = b64(eph); val c = b64(ct)
             val sig = Identity.sign("dm|$tag|$id|$myId|$to|$ts|${Crypto.sha256Hex((e + c).toByteArray())}".toByteArray())
-            transport?.send(JSONObject().put("type", "dm").put("id", id).put("sid", myId).put("n", r.name)
+            val f = JSONObject().put("type", "dm").put("id", id).put("sid", myId).put("n", r.name)
                 .put("to", to).put("ts", ts).put("e", e).put("c", c)
-                .put("pk", b64(myPub)).put("sig", b64(sig)).toString().toByteArray())
+                .put("pk", b64(myPub)).put("sig", b64(sig)).toString().toByteArray()
+            logFrame("dm", id, myId, ts, "", f)
+            transport?.send(f)
         }
     }
 
     private fun handleDm(j: JSONObject) {
         val sid = j.getString("sid")
-        if (isBanned(sid) || j.optString("to") != myId) return     // not for me (a relay just passes it on)
+        if (isBanned(sid)) return
         val id = j.getString("id"); val n = j.getString("n"); val ts = j.getLong("ts")
-        val e = j.getString("e"); val c = j.getString("c")
-        if (c.length > 20_000) return
-        if (!verified(j, "dm|$tag|$id|$sid|$myId|$ts|${Crypto.sha256Hex((e + c).toByteArray())}")) return
+        val e = j.getString("e"); val c = j.getString("c"); val to = j.optString("to")
+        if (c.length > 20_000 || to.length != 32) return
+        if (!verified(j, "dm|$tag|$id|$sid|$to|$ts|${Crypto.sha256Hex((e + c).toByteArray())}")) return
+        logFrame("dm", id, sid, ts, "", j.toString().toByteArray())
+        if (to != myId) return                // sealed to someone else: kept (unreadable) only to pass on if they missed it
         val plain = Crypto.unwrap(ecdh.first, Base64.decode(e, Base64.NO_WRAP), myId,
             Base64.decode(c, Base64.NO_WRAP), "dm|$tag|$id".toByteArray()) ?: return
         val body = JSONObject(plain.toString(Charsets.UTF_8))
@@ -626,13 +667,14 @@ class NodeSession(
             dmUnread.update { it + (sid to ((it[sid] ?: 0) + 1)) }
             unread.update { it + 1 }
         }
-        if (!AppState.foreground && !muted.value) Notifier.message(app, displayName(), people.label(sid, n) + " · PRIVATE", text)
+        if (!AppState.foreground && !muted.value) Notifier.message(app, displayName(), people.label(sid, n) + " · PRIVATE", text, tag, sid)
     }
 
     // ---- delivery and read receipts (batched every 1.5 s) ----
 
     /** Call while a chat (node or private thread) is on screen: everything visible counts as read. */
     fun markRead(dmPeer: String?) {
+        if (!settings.value.readMarks) return               // read marks off: nothing is reported
         messages.value.forEach { m ->
             if (m.senderId != myId && !m.system && m.dm == dmPeer && readReported.add(m.id)) pendingRead.add(m.id)
         }
@@ -641,16 +683,23 @@ class NodeSession(
     private fun flushReceipts() {
         if (pendingDelivered.isEmpty() && pendingRead.isEmpty()) return
         val d = pendingDelivered.take(200); pendingDelivered.removeAll(d.toSet())
-        val r = pendingRead.take(200); pendingRead.removeAll(r.toSet())
-        transport?.send(JSONObject().put("type", "rcpt").put("sid", myId)
-            .put("d", JSONArray(d)).put("r", JSONArray(r)).toString().toByteArray())
+        val r = if (settings.value.readMarks) pendingRead.take(200) else emptyList()
+        pendingRead.removeAll(r.toSet())
+        val ts = System.currentTimeMillis()
+        val sig = Identity.sign("rcpt|$tag|$myId|$ts|${Crypto.sha256Hex((d.joinToString(",") + "/" + r.joinToString(",")).toByteArray())}".toByteArray())
+        transport?.send(JSONObject().put("type", "rcpt").put("sid", myId).put("ts", ts)
+            .put("d", JSONArray(d)).put("r", JSONArray(r)).put("pk", b64(myPub)).put("sig", b64(sig)).toString().toByteArray())
     }
 
     private fun handleRcpt(j: JSONObject) {
         val sid = j.optString("sid")
         if (sid.length != 32 || sid == myId || isBanned(sid)) return
-        val mine = messages.value.filter { it.senderId == myId }.map { it.id }.toHashSet()
         fun ids(key: String) = j.optJSONArray(key)?.let { a -> (0 until minOf(a.length(), 200)).map { a.getString(it) } } ?: emptyList()
+        val ts = j.optLong("ts")
+        if (abs(System.currentTimeMillis() - ts) > 10 * 60_000L) return
+        // Signed, so nobody can fake someone else's delivered / read marks
+        if (!verified(j, "rcpt|$tag|$sid|$ts|${Crypto.sha256Hex((ids("d").joinToString(",") + "/" + ids("r").joinToString(",")).toByteArray())}")) return
+        val mine = messages.value.filter { it.senderId == myId }.map { it.id }.toHashSet()
         var changed = false
         ids("d").filter { it in mine }.forEach { if (deliveredBy.getOrPut(it) { ConcurrentHashMap.newKeySet() }.add(sid)) changed = true }
         ids("r").filter { it in mine }.forEach {
@@ -666,16 +715,22 @@ class NodeSession(
     // ---- typing indicator ----
 
     fun typingNow(dmTo: String?) {
+        if (!settings.value.typingSignal) return
         val now = System.currentTimeMillis()
         if (now - lastTypingSent < 3_000) return
         lastTypingSent = now
-        transport?.send(JSONObject().put("type", "typing").put("sid", myId).put("to", dmTo ?: "")
-            .toString().toByteArray())
+        scope.launch(Dispatchers.Default) {
+            val to = dmTo ?: ""
+            val sig = Identity.sign("typing|$tag|$myId|$to|$now".toByteArray())
+            transport?.send(JSONObject().put("type", "typing").put("sid", myId).put("to", to).put("ts", now)
+                .put("pk", b64(myPub)).put("sig", b64(sig)).toString().toByteArray())
+        }
     }
 
     private fun handleTyping(j: JSONObject) {
-        val sid = j.optString("sid"); val to = j.optString("to")
-        if (sid.length != 32 || sid == myId || isBanned(sid)) return
+        val sid = j.optString("sid"); val to = j.optString("to"); val ts = j.optLong("ts")
+        if (sid.length != 32 || sid == myId || isBanned(sid) || !settings.value.typingSignal) return
+        if (abs(System.currentTimeMillis() - ts) > 30_000 || !verified(j, "typing|$tag|$sid|$to|$ts")) return
         val key = when (to) { "" -> sid; myId -> "dm:$sid"; else -> return }
         val now = System.currentTimeMillis()
         typing.update { m -> m.filterValues { it > now } + (key to now + 6_000) }
@@ -691,8 +746,10 @@ class NodeSession(
         scope.launch(Dispatchers.Default) {
             val ts = System.currentTimeMillis()
             val sig = Identity.sign("react|$tag|$msgId|$myId|$emoji|$on|$ts".toByteArray())
-            transport?.send(JSONObject().put("type", "react").put("sid", myId).put("id", msgId).put("e", emoji)
-                .put("on", on).put("ts", ts).put("pk", b64(myPub)).put("sig", b64(sig)).toString().toByteArray())
+            val f = JSONObject().put("type", "react").put("sid", myId).put("id", msgId).put("e", emoji)
+                .put("on", on).put("ts", ts).put("pk", b64(myPub)).put("sig", b64(sig)).toString().toByteArray()
+            logFrame("react", msgId, myId, ts, emoji + on, f)
+            transport?.send(f)
         }
     }
 
@@ -701,6 +758,7 @@ class NodeSession(
         val on = j.getBoolean("on"); val ts = j.getLong("ts")
         if (isBanned(sid) || e !in REACTIONS) return
         if (!verified(j, "react|$tag|$id|$sid|$e|$on|$ts")) return
+        logFrame("react", id, sid, ts, e + on, j.toString().toByteArray())
         applyReaction(id, sid, e, on)
     }
 
@@ -722,14 +780,14 @@ class NodeSession(
         val t = newText.trim().ifEmpty { return }.take(4000)
         val m = messages.value.firstOrNull { it.id == msgId } ?: return
         if (m.senderId != myId || m.dm != null || m.image != null || m.video != null || m.voice != null) return
-        applyEdit(msgId, myId, t, false)
+        applyEdit(msgId, myId, t, false, System.currentTimeMillis())
         sendEdit(msgId, t, false)
     }
 
     fun delete(msgId: String) {
         val m = messages.value.firstOrNull { it.id == msgId } ?: return
         if (m.senderId != myId) return
-        applyEdit(msgId, myId, "", true)
+        applyEdit(msgId, myId, "", true, System.currentTimeMillis())
         sendEdit(msgId, "", true)
     }
 
@@ -737,8 +795,11 @@ class NodeSession(
         scope.launch(Dispatchers.Default) {
             val ts = System.currentTimeMillis()
             val sig = Identity.sign("edit|$tag|$msgId|$myId|$ts|$t|$del".toByteArray())
-            transport?.send(JSONObject().put("type", "edit").put("sid", myId).put("id", msgId).put("text", t)
-                .put("del", del).put("ts", ts).put("pk", b64(myPub)).put("sig", b64(sig)).toString().toByteArray())
+            val f = JSONObject().put("type", "edit").put("sid", myId).put("id", msgId).put("text", t)
+                .put("del", del).put("ts", ts).put("pk", b64(myPub)).put("sig", b64(sig)).toString().toByteArray()
+            logFrame("edit", msgId, myId, ts, "", f)
+            if (del) forgetFrames(msgId)
+            transport?.send(f)
         }
     }
 
@@ -747,18 +808,20 @@ class NodeSession(
         val del = j.optBoolean("del"); val ts = j.getLong("ts")
         if (isBanned(sid) || t.length > 4000) return
         if (!verified(j, "edit|$tag|$id|$sid|$ts|$t|$del")) return
-        applyEdit(id, sid, t, del)
+        logFrame("edit", id, sid, ts, "", j.toString().toByteArray())
+        if (del) forgetFrames(id)
+        applyEdit(id, sid, t, del, ts)
     }
 
     /** Only the original sender can change a message; a deleted message also loses its stored media. */
-    private fun applyEdit(msgId: String, who: String, t: String, del: Boolean) {
+    private fun applyEdit(msgId: String, who: String, t: String, del: Boolean, at: Long) {
         var target: Msg? = null
         messages.update { list ->
             list.map { m ->
                 if (m.id != msgId || m.senderId != who) m else {
                     target = m
-                    if (del) m.copy(text = "", deleted = true, image = null, video = null, voice = null, reactions = emptyMap())
-                    else if (m.dm == null && !m.deleted) m.copy(text = t, edited = true) else m
+                    if (del) m.copy(text = "", deleted = true, image = null, video = null, voice = null, reactions = emptyMap(), pinned = false)
+                    else if (m.dm == null && !m.deleted && at > m.editedAt) m.copy(text = t, edited = true, editedAt = at) else m
                 }
             }
         }
@@ -766,7 +829,7 @@ class NodeSession(
         if (del && gone != null) {
             scope.launch(Dispatchers.IO) {
                 gone.image?.let { vault.deleteItem(tag, it) }
-                gone.video?.let { vault.deleteItem(tag, videoKey(it)); vault.deleteItem(tag, thumbKey(it)) }
+                gone.video?.let { vault.deleteItem(tag, videoKey(it)); vault.deleteItem(tag, thumbKey(it)); vault.deleteItem(tag, ogKey(it)) }
                 gone.voice?.let { v -> synchronized(voices) { voices.remove(v) } }
             }
         }
@@ -777,6 +840,7 @@ class NodeSession(
 
     fun cancelTransfer(id: String) {
         cancelled.add(id)
+        if (mediaQueue.removeAll { it.id == id }) saveMediaQueue()
         jobs.remove(id)?.cancel()
         preparing.update { it - id }
         setProgress(id, -1f)
@@ -837,6 +901,7 @@ class NodeSession(
             transport?.sendTo(to, JSONObject().put("type", "succ").put("sid", myId).put("c", c).toString().toByteArray())
         }
         hostChain().forEach { h -> transport?.sendTo(to, h.toString().toByteArray()) }
+        prefs.getString("ttlcert_$tag", null)?.let { c -> transport?.sendTo(to, c.toByteArray()) }
     }
 
     /**
@@ -914,6 +979,446 @@ class NodeSession(
         announce()
     }
 
+    // ---------- Drafts and scheduled messages ----------
+
+    fun draft(dm: String?): String = prefs.getString("draft_${tag}_${dm ?: ""}", "") ?: ""
+    fun saveDraft(dm: String?, text: String) {
+        val k = "draft_${tag}_${dm ?: ""}"
+        if (text.isBlank()) prefs.edit().remove(k).apply() else prefs.edit().putString(k, text.take(4000)).apply()
+    }
+
+    data class Scheduled(val id: String, val text: String, val at: Long, val dm: String?, val re: String?)
+    val scheduled = MutableStateFlow(loadScheduled())
+
+    private fun loadScheduled(): List<Scheduled> = runCatching {
+        val a = JSONArray(prefs.getString("sched_$tag", "[]"))
+        (0 until a.length()).map { a.getJSONObject(it) }.map { o ->
+            Scheduled(o.getString("id"), o.getString("t"), o.getLong("at"), o.optString("dm").ifEmpty { null }, o.optString("re").ifEmpty { null })
+        }
+    }.getOrDefault(emptyList())
+
+    private fun saveScheduled() {
+        val a = JSONArray()
+        scheduled.value.forEach { s -> a.put(JSONObject().put("id", s.id).put("t", s.text).put("at", s.at).put("dm", s.dm ?: "").put("re", s.re ?: "")) }
+        prefs.edit().putString("sched_$tag", a.toString()).apply()
+    }
+
+    /** Send [text] at [at] (this phone needs to be on, with CyberTxTs running in the background). */
+    fun schedule(text: String, at: Long, dm: String?, re: String?) {
+        val t = text.trim().ifEmpty { return }.take(4000)
+        scheduled.update { (it + Scheduled(UUID.randomUUID().toString(), t, at, dm, re)).sortedBy { s -> s.at } }
+        saveScheduled()
+    }
+
+    fun cancelScheduled(id: String) { scheduled.update { l -> l.filterNot { it.id == id } }; saveScheduled() }
+
+    private fun sendDueScheduled() {
+        val now = System.currentTimeMillis()
+        val due = scheduled.value.filter { it.at <= now }
+        if (due.isEmpty()) return
+        scheduled.update { l -> l.filterNot { s -> due.any { it.id == s.id } } }
+        saveScheduled()
+        due.forEach { s -> send(s.text, s.re, s.dm) }
+    }
+
+    // ---------- Polls ----------
+    //
+    // A poll is a signed question with up to 6 options. Each operative's vote is signed too, and only their
+    // latest vote counts, so nobody can vote twice or vote as someone else.
+
+    fun createPoll(question: String, options: List<String>) {
+        val q = question.trim().take(300); val opts = options.map { it.trim().take(100) }.filter { it.isNotEmpty() }.take(6)
+        if (q.isEmpty() || opts.size < 2) return
+        val id = UUID.randomUUID().toString(); val ts = System.currentTimeMillis()
+        val optJson = JSONArray(opts).toString()
+        add(Msg(id, myId, room.value.name, q, ts, poll = optJson))
+        scope.launch(Dispatchers.Default) {
+            val sig = Identity.sign("poll|$tag|$id|$myId|$ts|${Crypto.sha256Hex((q + "\u0000" + optJson).toByteArray())}".toByteArray())
+            val f = JSONObject().put("type", "poll").put("id", id).put("sid", myId).put("n", room.value.name).put("q", q)
+                .put("o", optJson).put("ts", ts).put("pk", b64(myPub)).put("sig", b64(sig)).toString().toByteArray()
+            logFrame("poll", id, myId, ts, "", f)
+            transport?.send(f)
+        }
+    }
+
+    private fun handlePoll(j: JSONObject) {
+        val sid = j.getString("sid"); val id = j.getString("id"); val q = j.getString("q"); val o = j.getString("o"); val ts = j.getLong("ts")
+        if (isBanned(sid) || q.length > 300 || o.length > 1_000) return
+        val opts = runCatching { JSONArray(o) }.getOrNull() ?: return
+        if (opts.length() !in 2..6) return
+        if (!verified(j, "poll|$tag|$id|$sid|$ts|${Crypto.sha256Hex((q + "\u0000" + o).toByteArray())}")) return
+        logFrame("poll", id, sid, ts, "", j.toString().toByteArray())
+        val n = j.optString("n")
+        people.seen(sid, n)
+        val isNew = synchronized(seen) { !seen.contains(id) }
+        add(Msg(id, sid, people.alias(sid, n), q, ts, poll = o))
+        if (isNew && sid != myId && !(AppState.foreground && viewing(tag))) unread.update { it + 1 }
+    }
+
+    /** Vote for option [choice] (or -1 to take your vote back). */
+    fun vote(pollId: String, choice: Int) {
+        val ts = System.currentTimeMillis()
+        applyVote(pollId, myId, choice, ts)
+        scope.launch(Dispatchers.Default) {
+            val sig = Identity.sign("pvote|$tag|$pollId|$myId|$choice|$ts".toByteArray())
+            val f = JSONObject().put("type", "pvote").put("id", pollId).put("sid", myId).put("c", choice).put("ts", ts)
+                .put("pk", b64(myPub)).put("sig", b64(sig)).toString().toByteArray()
+            logFrame("pvote", pollId, myId, ts, "$choice", f)
+            transport?.send(f)
+        }
+    }
+
+    private fun handleVote2(j: JSONObject) {
+        val sid = j.getString("sid"); val id = j.getString("id"); val c = j.getInt("c"); val ts = j.getLong("ts")
+        if (isBanned(sid) || c < -1 || c > 5) return
+        if (!verified(j, "pvote|$tag|$id|$sid|$c|$ts")) return
+        logFrame("pvote", id, sid, ts, "$c", j.toString().toByteArray())
+        applyVote(id, sid, c, ts)
+    }
+
+    private fun applyVote(pollId: String, who: String, choice: Int, ts: Long) {
+        messages.update { l ->
+            l.map { m ->
+                if (m.id != pollId || m.poll == null) m else {
+                    val prev = m.votes[who]?.substringAfter(':')?.toLongOrNull() ?: 0L
+                    if (ts <= prev) m else m.copy(votes = m.votes + (who to "$choice:$ts"))
+                }
+            }
+        }
+        scheduleSave()
+    }
+
+    // ---------- Disappearing messages ----------
+    //
+    // A node-wide timer that anyone can set (signed). Every phone deletes messages older than it, including their
+    // photos and videos, and drops them from the catch-up log so they're never handed out again.
+
+    /** Message lifetime in ms (0 = keep). */
+    val ttl = MutableStateFlow(prefs.getLong("ttl_$tag", 0L))
+
+    fun setTtl(v: Long) {
+        scope.launch(Dispatchers.Default) {
+            val ts = System.currentTimeMillis()
+            val sig = Identity.sign("ttl|$tag|$v|$ts".toByteArray())
+            val j = JSONObject().put("type", "ttl").put("sid", myId).put("v", v).put("ts", ts)
+                .put("pk", b64(myPub)).put("sig", b64(sig))
+            transport?.send(j.toString().toByteArray())
+            acceptTtl(j, myId)
+        }
+    }
+
+    private fun handleTtl(j: JSONObject) {
+        val sid = j.getString("sid"); val v = j.getLong("v"); val ts = j.getLong("ts")
+        if (isBanned(sid) || v < 0 || v > 30L * 86_400_000L || ts > System.currentTimeMillis() + 300_000) return
+        if (!verified(j, "ttl|$tag|$v|$ts")) return
+        acceptTtl(j, sid)
+    }
+
+    private fun acceptTtl(j: JSONObject, by: String) {
+        val v = j.getLong("v"); val ts = j.getLong("ts")
+        if (ts <= prefs.getLong("ttlts_$tag", 0L)) return            // an older setting
+        prefs.edit().putLong("ttl_$tag", v).putLong("ttlts_$tag", ts).putString("ttlcert_$tag", j.toString()).apply()
+        ttl.value = v
+        add(Msg("sys-ttl-$ts", "system", "",
+            "SYS · DISAPPEARING MESSAGES " + (if (v == 0L) "OFF" else "SET TO " + ttlLabel(v)) + " BY " +
+                (if (by == myId) "YOU" else opTagOf(by)), System.currentTimeMillis(), system = true))
+        sweepExpired()
+    }
+
+    private fun sweepExpired() {
+        val life = ttl.value
+        if (life <= 0) return
+        val cutoff = System.currentTimeMillis() - life
+        val gone = messages.value.filter { it.ts < cutoff && !(it.system && it.id.startsWith("sys-ttl-")) }
+        if (gone.isEmpty()) return
+        val ids = gone.map { it.id }.toSet()
+        messages.update { l -> l.filterNot { it.id in ids } }
+        synchronized(frameLog) { pruneLog(System.currentTimeMillis()) }
+        scope.launch(Dispatchers.IO) {
+            gone.forEach { m ->
+                m.image?.let { vault.deleteItem(tag, it) }
+                m.video?.let { vault.deleteItem(tag, videoKey(it)); vault.deleteItem(tag, thumbKey(it)); vault.deleteItem(tag, ogKey(it)) }
+                m.voice?.let { v -> synchronized(voices) { voices.remove(v) } }
+            }
+        }
+        scheduleSave(); scheduleLogSave()
+    }
+
+    // ---------- Pins ----------
+
+    fun setPinned(msgId: String, on: Boolean) {
+        applyPin(msgId, on)
+        scope.launch(Dispatchers.Default) {
+            val ts = System.currentTimeMillis()
+            val sig = Identity.sign("pin|$tag|$msgId|$on|$ts".toByteArray())
+            val f = JSONObject().put("type", "pin").put("sid", myId).put("id", msgId).put("on", on).put("ts", ts)
+                .put("pk", b64(myPub)).put("sig", b64(sig)).toString().toByteArray()
+            logFrame("pin", msgId, myId, ts, "$on", f)
+            transport?.send(f)
+        }
+    }
+
+    private fun handlePin(j: JSONObject) {
+        val sid = j.getString("sid"); val id = j.getString("id"); val on = j.getBoolean("on"); val ts = j.getLong("ts")
+        if (isBanned(sid) || id.length > 64) return
+        if (!verified(j, "pin|$tag|$id|$on|$ts")) return
+        logFrame("pin", id, sid, ts, "$on", j.toString().toByteArray())
+        applyPin(id, on)
+    }
+
+    private fun applyPin(msgId: String, on: Boolean) {
+        messages.update { l -> l.map { if (it.id == msgId && !it.deleted) it.copy(pinned = on) else it } }
+        scheduleSave()
+    }
+
+    // ---------- Calls: signalling rides on this node's encrypted links ----------
+
+    /** Send a call signal to [to]. Offers, answers and hang-ups are signed so another operative can't fake them. */
+    fun sendCallSignal(to: String, payload: JSONObject) {
+        scope.launch(Dispatchers.Default) {
+            val ts = System.currentTimeMillis()
+            val body = payload.toString()
+            val sig = Identity.sign("call|$tag|$myId|$to|$ts|${Crypto.sha256Hex(body.toByteArray())}".toByteArray())
+            transport?.send(JSONObject().put("type", "call").put("sid", myId).put("to", to).put("ts", ts).put("b", body)
+                .put("pk", b64(myPub)).put("sig", b64(sig)).toString().toByteArray())
+        }
+    }
+
+    /** Checks a call frame addressed to me; returns its payload if genuine and fresh. */
+    fun openCallSignal(j: JSONObject): JSONObject? {
+        val sid = j.optString("sid"); val to = j.optString("to"); val ts = j.optLong("ts"); val body = j.optString("b")
+        if (to != myId || isBanned(sid) || body.length > 60_000 || abs(System.currentTimeMillis() - ts) > 60_000) return null
+        if (!verified(j, "call|$tag|$sid|$to|$ts|${Crypto.sha256Hex(body.toByteArray())}")) return null
+        return runCatching { JSONObject(body) }.getOrNull()
+    }
+
+    // ---------- Search jump, forwarding ----------
+
+    /** Set by search: the chat screen scrolls to this message, then clears it. */
+    val jumpTo = MutableStateFlow<String?>(null)
+
+    /** Send a copy of [m] (from [src], which may be another node or contact) here. */
+    fun forwardFrom(src: NodeSession, m: Msg) {
+        when {
+            m.deleted -> {}
+            m.image != null -> {
+                val bytes = src.readImage(m) ?: run { onNotice("That photo is no longer stored on this phone."); return }
+                scope.launch(Dispatchers.IO) {
+                    val id = UUID.randomUUID().toString()
+                    vault.save(tag, id, bytes)
+                    sendMedia(id, KIND_IMAGE, bytes, m.imgW, m.imgH, 0L)
+                }
+            }
+            m.voice != null -> {
+                val bytes = src.readVoice(m) ?: run { onNotice("That VOX note is gone (they aren't kept after a restart)."); return }
+                sendVoice(bytes, m.durMs)
+            }
+            m.video != null -> scope.launch(Dispatchers.IO) {
+                val id = UUID.randomUUID().toString()
+                val tmp = File(app.cacheDir, "vout_fwd_$id.mp4")
+                try {
+                    if (!src.exportVideo(m, tmp)) { onNotice("That video isn't stored on this phone."); return@launch }
+                    val thumb = src.readThumb(m)
+                    vault.saveFrom(tag, videoKey(id), tmp)
+                    thumb?.let { vault.save(tag, thumbKey(id), it) }
+                    val ts = System.currentTimeMillis()
+                    add(Msg(id, myId, room.value.name, "", ts, imgW = m.imgW, imgH = m.imgH, durMs = m.durMs, video = id))
+                    sendVideoFile(id, ts, tmp, VideoUtil.Info(m.durMs, m.imgW, m.imgH, thumb))
+                } finally { tmp.delete() }
+            }
+            m.text.isNotEmpty() -> send(m.text)
+        }
+    }
+
+    // ---------- Original-quality video on request ----------
+
+    /** Ask the sender for the untouched original of a video. */
+    fun requestOriginal(m: Msg) {
+        val vid = m.video ?: return
+        if (m.og <= 0 || m.ogHave || m.senderId == myId) return
+        if (m.senderId !in reachable()) { onNotice("The sender needs to be online to send the original."); return }
+        setProgress("$vid-og", 0f)
+        transport?.send(JSONObject().put("type", "ogreq").put("sid", myId).put("to", m.senderId).put("id", vid)
+            .toString().toByteArray())
+    }
+
+    private fun handleOriginalRequest(j: JSONObject) {
+        val sid = j.optString("sid"); val id = j.optString("id")
+        if (j.optString("to") != myId || isBanned(sid) || sid !in connected.value) return
+        val m = messages.value.firstOrNull { it.id == id && it.senderId == myId && it.og > 0 } ?: return
+        scope.launch(Dispatchers.IO) {
+            val tmp = File(app.cacheDir, "vog_out_$id.mp4")
+            try {
+                if (!vault.decryptTo(tag, ogKey(id), tmp)) return@launch
+                sendVideoFile("$id-og", System.currentTimeMillis(), tmp,
+                    VideoUtil.Info(m.durMs, m.imgW, m.imgH, null), onlyTo = setOf(sid))
+                setProgress("$id-og", null)
+            } finally { tmp.delete() }
+        }
+    }
+
+    /** Only the original sender's signed original is accepted, and only for a video they actually sent with one. */
+    private fun acceptOriginalHeader(j: JSONObject, id: String, sid: String, kind: String, size: Int, hashes: List<String>) {
+        val base = id.removeSuffix("-og")
+        val m = messages.value.firstOrNull { it.id == base } ?: return
+        if (kind != KIND_VIDEO || m.senderId != sid || m.og <= 0 || m.ogHave) return
+        if (assemblies.containsKey(id)) return
+        sweepTransfers()
+        val a = try { Assembly(j, hashes, File(app.cacheDir, "vin_$id.part")) } catch (e: Exception) { return }
+        if (assemblies.putIfAbsent(id, a) != null) { a.discard(); return }
+        setProgress(id, 0f)
+    }
+
+    private fun completeOriginal(id: String, a: Assembly, size: Int) {
+        val base = id.removeSuffix("-og")
+        scope.launch(Dispatchers.IO) {
+            try {
+                val f = a.file ?: return@launch
+                runCatching { a.raf?.close() }
+                if (f.length() != size.toLong()) { setProgress(id, -1f); return@launch }
+                vault.saveFrom(tag, videoKey(base), f)          // the original replaces the shrunk copy
+                messages.update { l -> l.map { if (it.id == base) it.copy(ogHave = true) else it } }
+                setProgress(id, null)
+                scheduleSave()
+            } catch (e: Exception) {
+                setProgress(id, -1f)
+            } finally { a.file?.delete() }
+        }
+    }
+
+    // ---------- Catch-up: phones that were away get what they missed ----------
+    //
+    // Every phone keeps the signed frames of the last week (messages, sealed private messages, photo/video headers,
+    // edits, reactions). When two phones link, each sends a list of what it holds; the other replies with
+    // whatever is missing, exactly as originally signed, so nothing can be altered or invented on the way.
+    // Retracted messages are dropped from the log, so they aren't handed out again.
+
+    private class Logged(val key: String, val ts: Long, val type: String, val id: String, val frame: String)
+    private val frameLog = ArrayList<Logged>()            // guarded by synchronized(frameLog)
+    private var logSaveJob: Job? = null
+    private val syncedAt = ConcurrentHashMap<String, Long>()
+
+    private fun logFrame(type: String, id: String, sid: String, ts: Long, extra: String, bytes: ByteArray) {
+        val key = Crypto.sha256Hex("$type|$id|$sid|$ts|$extra".toByteArray()).take(16)
+        val now = System.currentTimeMillis()
+        if (ts < now - LOG_DAYS * 86_400_000L) return
+        synchronized(frameLog) {
+            if (frameLog.any { it.key == key }) return
+            frameLog.add(Logged(key, ts, type, id, bytes.toString(Charsets.UTF_8)))
+            pruneLog(now)
+        }
+        scheduleLogSave()
+    }
+
+    private fun pruneLog(now: Long) {
+        val life = ttl.value
+        frameLog.removeAll { it.ts < now - LOG_DAYS * 86_400_000L || (life > 0 && it.ts < now - life) }
+        frameLog.sortBy { it.ts }
+        var chars = frameLog.sumOf { it.frame.length.toLong() }
+        while (frameLog.size > LOG_MAX || chars > LOG_MAX_CHARS) { chars -= frameLog[0].frame.length; frameLog.removeAt(0) }
+    }
+
+    private fun forgetFrames(id: String) {
+        synchronized(frameLog) { frameLog.removeAll { it.id == id && it.type in setOf("msg", "dm", "media") } }
+        scheduleLogSave()
+    }
+
+    private fun scheduleLogSave() {
+        if (!settings.value.keepHistory) return
+        logSaveJob?.cancel()
+        logSaveJob = scope.launch(Dispatchers.IO) {
+            delay(2_500)
+            val a = JSONArray()
+            synchronized(frameLog) {
+                frameLog.forEach { a.put(JSONObject().put("k", it.key).put("ts", it.ts).put("t", it.type).put("id", it.id).put("f", it.frame)) }
+            }
+            runCatching { store.saveFrames(tag, a.toString()) }
+        }
+    }
+
+    private fun loadFrameLog() {
+        val txt = store.loadFrames(tag) ?: return
+        runCatching {
+            val a = JSONArray(txt)
+            synchronized(frameLog) {
+                frameLog.clear()
+                for (i in 0 until a.length()) {
+                    val o = a.getJSONObject(i)
+                    frameLog.add(Logged(o.getString("k"), o.getLong("ts"), o.getString("t"), o.getString("id"), o.getString("f")))
+                }
+                pruneLog(System.currentTimeMillis())
+            }
+        }
+    }
+
+    private fun requestSync(peer: String) {
+        if (closed || peer !in connected.value) return
+        val have = synchronized(frameLog) { frameLog.map { it.key } }
+        transport?.sendTo(setOf(peer), JSONObject().put("type", "syn").put("sid", myId).put("to", peer)
+            .put("since", prefs.getLong("joined_$tag", System.currentTimeMillis()))
+            .put("have", JSONArray(have)).toString().toByteArray())
+    }
+
+    private fun handleSync(j: JSONObject) {
+        val sid = j.optString("sid")
+        if (j.optString("to") != myId || sid !in connected.value || isBanned(sid)) return
+        val now = System.currentTimeMillis()
+        if (now - (syncedAt[sid] ?: 0L) < 30_000) return
+        syncedAt[sid] = now
+        val have = j.optJSONArray("have")?.let { a -> (0 until minOf(a.length(), 3_000)).map { a.optString(it) }.toHashSet() } ?: hashSetOf()
+        // Nobody gets messages from before they joined: their own claim, and never earlier than when we first met them
+        val firstMet = people.firstSeenAt(sid) ?: now
+        val since = maxOf(j.optLong("since", now), firstMet - 6 * 3_600_000L)
+        val missing = synchronized(frameLog) { frameLog.filter { it.key !in have && it.ts >= since } }.sortedBy { it.ts }.takeLast(400)
+        if (missing.isEmpty()) return
+        scope.launch(Dispatchers.IO) {
+            for (e in missing) {
+                if (closed || sid !in connected.value) break
+                transport?.sendToBlocking(setOf(sid), e.frame.toByteArray())
+                if (e.type == "media") runCatching { resendPieces(sid, e) }
+                delay(5)
+            }
+        }
+    }
+
+    /** A photo, voice note or video someone missed: send its pieces again from storage (they match the signed header). */
+    private suspend fun resendPieces(to: String, e: Logged) {
+        val hd = JSONObject(e.frame)
+        if (hd.optString("to").isNotEmpty()) return            // private items are sealed to one person: can't re-send
+        val id = hd.getString("id"); val kind = hd.getString("k"); val size = hd.getInt("size")
+        val bytes: ByteArray? = when (kind) {
+            KIND_IMAGE -> vault.read(tag, id)
+            KIND_VOICE -> synchronized(voices) { voices[id] }
+            else -> null
+        }
+        if (bytes != null) {
+            if (bytes.size != size) return
+            val chunks = (size + CHUNK - 1) / CHUNK
+            for (i in 0 until chunks) {
+                if (closed || to !in connected.value) return
+                transport?.sendToBlocking(setOf(to), piece(id, i, bytes.copyOfRange(i * CHUNK, minOf((i + 1) * CHUNK, size))))
+                if (i % 4 == 3) delay(15)
+            }
+            return
+        }
+        if (kind != KIND_VIDEO) return
+        val tmp = File(app.cacheDir, "vout_sync_$id.mp4")
+        try {
+            if (!vault.decryptTo(tag, videoKey(id), tmp) || tmp.length() != size.toLong()) return
+            val buf = ByteArray(CHUNK)
+            RandomAccessFile(tmp, "r").use { raf ->
+                val chunks = (size + CHUNK - 1) / CHUNK
+                for (i in 0 until chunks) {
+                    if (closed || to !in connected.value) return
+                    val len = minOf(CHUNK, size - i * CHUNK)
+                    raf.seek(i.toLong() * CHUNK); raf.readFully(buf, 0, len)
+                    transport?.sendToBlocking(setOf(to), piece(id, i, buf.copyOf(len)))
+                    if (i % 4 == 3) delay(15)
+                }
+            }
+        } finally { tmp.delete() }
+    }
+
     // ---------- Contacts: requests and the direct-link outbox ----------
 
     /** Ask [to] for a direct link, sealing the link's secret to their key. False if we don't have their key yet. */
@@ -974,8 +1479,67 @@ class NodeSession(
         }
     }
 
-    private fun offlineNotice() =
-        onNotice("They aren't linked right now. Texts wait and send themselves, but photos, video and VOX need you both online: tap Retry when they are.")
+    // ---- direct links: photos, VOX and video wait for the other phone too ----
+
+    private data class Queued(val id: String, val kind: String, val w: Int, val h: Int, val dur: Long)
+    private val mediaQueue = CopyOnWriteArrayList<Queued>()
+    @Volatile private var flushingMedia = false
+
+    private fun enqueue(q: Queued) {
+        if (mediaQueue.none { it.id == q.id }) mediaQueue.add(q)
+        setProgress(q.id, QUEUED)
+        saveMediaQueue()
+    }
+
+    /** Photos and videos survive a restart (they're in the encrypted vault); VOX notes live in memory only. */
+    private fun saveMediaQueue() {
+        val a = JSONArray()
+        mediaQueue.filter { it.kind != KIND_VOICE }.forEach { q ->
+            a.put(JSONObject().put("id", q.id).put("k", q.kind).put("w", q.w).put("h", q.h).put("d", q.dur))
+        }
+        prefs.edit().putString("mq_$tag", a.toString()).apply()
+    }
+
+    private fun loadMediaQueue() {
+        if (directPeer == null) return
+        runCatching {
+            val a = JSONArray(prefs.getString("mq_$tag", "[]"))
+            for (i in 0 until a.length()) {
+                val o = a.getJSONObject(i)
+                val q = Queued(o.getString("id"), o.getString("k"), o.optInt("w"), o.optInt("h"), o.optLong("d"))
+                if (mediaQueue.none { it.id == q.id }) mediaQueue.add(q)
+                setProgress(q.id, QUEUED)
+            }
+        }
+    }
+
+    /** They linked: send everything that was waiting, one item at a time. */
+    private fun flushMediaQueue() {
+        if (closed || flushingMedia || mediaQueue.isEmpty() || connected.value.isEmpty()) return
+        flushingMedia = true
+        scope.launch(Dispatchers.IO) {
+            try {
+                for (q in mediaQueue.toList()) {
+                    if (closed || connected.value.isEmpty()) break
+                    mediaQueue.remove(q); saveMediaQueue()
+                    if (q.id in cancelled) continue
+                    when (q.kind) {
+                        KIND_IMAGE -> vault.read(tag, q.id)?.let { sendMedia(q.id, KIND_IMAGE, it, q.w, q.h, 0L) } ?: setProgress(q.id, -1f)
+                        KIND_VOICE -> synchronized(voices) { voices[q.id] }?.let { sendMedia(q.id, KIND_VOICE, it, 0, 0, q.dur) } ?: setProgress(q.id, -1f)
+                        KIND_VIDEO -> {
+                            val tmp = File(app.cacheDir, "vout_q_${q.id}.mp4")
+                            try {
+                                if (vault.decryptTo(tag, videoKey(q.id), tmp)) {
+                                    sendVideoFile(q.id, System.currentTimeMillis(), tmp,
+                                        VideoUtil.Info(q.dur, q.w, q.h, vault.read(tag, thumbKey(q.id))))
+                                } else setProgress(q.id, -1f)
+                            } finally { tmp.delete() }
+                        }
+                    }
+                }
+            } finally { flushingMedia = false }
+        }
+    }
 
     // ---------- Naming ----------
 
@@ -1062,8 +1626,12 @@ class NodeSession(
         return iv + c.doFinal(part)
     }
 
-    private fun out(seal: Seal?, frame: ByteArray) {
-        if (seal == null) transport?.sendBlocking(frame) else transport?.sendToBlocking(seal.via, frame)
+    private fun out(seal: Seal?, frame: ByteArray, onlyTo: Set<String>? = null) {
+        when {
+            onlyTo != null -> transport?.sendToBlocking(onlyTo, frame)
+            seal == null -> transport?.sendBlocking(frame)
+            else -> transport?.sendToBlocking(seal.via, frame)
+        }
     }
 
     private fun cantReach(to: String) =
@@ -1128,7 +1696,7 @@ class NodeSession(
     private fun keepKeys(list: List<Msg>, s: AppSettings): Set<String> {
         val keep = HashSet<String>()
         if (s.keepImages) list.forEach { m -> m.image?.let { keep.add(it) } }
-        if (s.keepVideos) list.forEach { m -> m.video?.let { keep.add(videoKey(it)); keep.add(thumbKey(it)) } }
+        if (s.keepVideos) list.forEach { m -> m.video?.let { keep.add(videoKey(it)); keep.add(thumbKey(it)); if (m.og > 0) keep.add(ogKey(it)) } }
         return keep
     }
 
@@ -1183,9 +1751,21 @@ class NodeSession(
             preparing.update { it + (id to 0f) }
             add(Msg(id, myId, r.name, "", ts, imgW = info.w, imgH = info.h, durMs = info.durMs, video = id, dm = dmTo))
 
+            // ORIGINAL: everyone gets a Standard copy now; the untouched file stays here for whoever taps DOWNLOAD
+            var og = 0L
+            if (q == Quality.ORIGINAL && dmTo == null) {
+                val tmp = File(app.cacheDir, "vog_$id.mp4")
+                try {
+                    app.contentResolver.openInputStream(uri)?.use { input -> tmp.outputStream().use { input.copyTo(it, 64 * 1024) } }
+                    if (tmp.length() in 1L..MAX_ORIGINAL_VIDEO) { vault.saveFrom(tag, ogKey(id), tmp); og = tmp.length() }
+                } catch (e: Exception) { og = 0L } finally { tmp.delete() }
+                if (og > 0) messages.update { l -> l.map { if (it.id == id) it.copy(og = og, ogHave = true) else it } }
+                else onNotice("That original is over 400 MB, so only the shrunk copy will be sent.")
+            }
             val out = File(app.cacheDir, "vout_$id.mp4")
+            val shrinkTo = when { q != Quality.ORIGINAL -> q; dmTo != null -> Quality.HIGH; else -> Quality.STANDARD }
             val ok = try {
-                VideoUtil.transcode(app, uri, out, info, if (q == Quality.ORIGINAL) Quality.HIGH else q) { p -> preparing.update { m -> m + (id to p) } }
+                VideoUtil.transcode(app, uri, out, info, shrinkTo) { p -> preparing.update { m -> m + (id to p) } }
             } catch (e: Exception) { false }
             preparing.update { it - id }
             if (id in cancelled) { out.delete(); jobs.remove(id); return@launch }
@@ -1200,7 +1780,7 @@ class NodeSession(
             }
             try {
                 vault.saveFrom(tag, videoKey(id), out)
-                sendVideoFile(id, ts, out, info, dmTo)
+                sendVideoFile(id, ts, out, info, dmTo, og)
             } finally {
                 out.delete()
                 jobs.remove(id)
@@ -1212,7 +1792,7 @@ class NodeSession(
 
     private fun header(
         id: String, ts: Long, kind: String, size: Int, hashes: List<String>,
-        w0: Int, h0: Int, dur0: Long, thumb0: ByteArray?, seal: Seal? = null
+        w0: Int, h0: Int, dur0: Long, thumb0: ByteArray?, seal: Seal? = null, og: Long = 0L
     ): ByteArray {
         val r = room.value
         val chunks = hashes.size
@@ -1230,6 +1810,7 @@ class NodeSession(
             tail = "|${seal.to}|${Crypto.sha256Hex((e + c).toByteArray())}"
         }
         val th = thumb?.let { Crypto.sha256Hex(it) } ?: ""
+        if (og > 0) tail += "|og$og"
         val sig = Identity.sign("media|$tag|$id|$myId|$ts|$kind|$size|$chunks|$listHash|$w|$h|$dur|$th$tail".toByteArray())
         val j = JSONObject().put("type", "media").put("id", id).put("sid", myId).put("n", r.name)
             .put("ts", ts).put("k", kind).put("size", size).put("chunks", chunks)
@@ -1237,6 +1818,7 @@ class NodeSession(
             .put("pk", b64(myPub)).put("sig", b64(sig))
         if (thumb != null) j.put("thumb", b64(thumb))
         if (seal != null) j.put("to", seal.to).put("e", e).put("c", c)
+        if (og > 0) j.put("og", og)
         return j.toString().toByteArray()
     }
 
@@ -1252,7 +1834,7 @@ class NodeSession(
             if (kind == KIND_IMAGE) Msg(id, myId, r.name, "", ts, image = id, imgW = w, imgH = h, dm = dmTo)
             else Msg(id, myId, r.name, "", ts, voice = id, durMs = dur, dm = dmTo)
         )
-        if (directPeer != null && connected.value.isEmpty()) { setProgress(id, -1f); offlineNotice(); return }
+        if (directPeer != null && connected.value.isEmpty()) { enqueue(Queued(id, kind, w, h, dur)); return }
         val seal = dmTo?.let { sealFor(it) ?: run { setProgress(id, -1f); cantReach(it); return } }
         fun wire(i: Int): ByteArray {
             val part = bytes.copyOfRange(i * CHUNK, minOf((i + 1) * CHUNK, bytes.size))
@@ -1260,7 +1842,9 @@ class NodeSession(
         }
         val hashes = (0 until chunks).map { i -> pieceHash(wire(i)) }
         try {
-            out(seal, header(id, ts, kind, bytes.size, hashes, w, h, dur, null, seal))
+            val hdr = header(id, ts, kind, bytes.size, hashes, w, h, dur, null, seal)
+            if (seal == null) logFrame("media", id, myId, ts, "", hdr)
+            out(seal, hdr)
             for (i in 0 until chunks) {
                 if (closed) return
                 if (id in cancelled) { setProgress(id, -1f); return }
@@ -1274,11 +1858,14 @@ class NodeSession(
         }
     }
 
-    private suspend fun sendVideoFile(id: String, ts: Long, f: File, info: VideoUtil.Info, dmTo: String? = null) {
+    private suspend fun sendVideoFile(
+        id: String, ts: Long, f: File, info: VideoUtil.Info, dmTo: String? = null,
+        og: Long = 0L, onlyTo: Set<String>? = null
+    ) {
         val size = f.length().toInt()
         val chunks = (size + CHUNK - 1) / CHUNK
         val buf = ByteArray(CHUNK)
-        if (directPeer != null && connected.value.isEmpty()) { setProgress(id, -1f); offlineNotice(); return }
+        if (onlyTo == null && directPeer != null && connected.value.isEmpty()) { enqueue(Queued(id, KIND_VIDEO, info.w, info.h, info.durMs)); return }
         val seal = dmTo?.let { sealFor(it) ?: run { setProgress(id, -1f); cantReach(it); return } }
         fun readPiece(raf: RandomAccessFile, i: Int): ByteArray {
             val len = minOf(CHUNK, size - i * CHUNK)
@@ -1290,12 +1877,14 @@ class NodeSession(
         setProgress(id, 0f)
         try {
             val hashes = RandomAccessFile(f, "r").use { raf -> (0 until chunks).map { pieceHash(readPiece(raf, it)) } }
-            out(seal, header(id, ts, KIND_VIDEO, size, hashes, info.w, info.h, info.durMs, info.thumb, seal))
+            val hdr = header(id, ts, KIND_VIDEO, size, hashes, info.w, info.h, info.durMs, info.thumb, seal, og)
+            if (seal == null && onlyTo == null) logFrame("media", id, myId, ts, "", hdr)
+            out(seal, hdr, onlyTo)
             RandomAccessFile(f, "r").use { raf ->
                 for (i in 0 until chunks) {
                     if (closed) return
                     if (id in cancelled) { setProgress(id, -1f); return }
-                    out(seal, piece(id, i, readPiece(raf, i)))
+                    out(seal, piece(id, i, readPiece(raf, i)), onlyTo)
                     setProgress(id, (i + 1).toFloat() / chunks)
                     if (i % 4 == 3) delay(15)
                 }
@@ -1316,11 +1905,14 @@ class NodeSession(
         val to = j.optString("to", "")
         val e = j.optString("e", ""); val c = j.optString("c", "")
         if (to.isNotEmpty() && (to.length != 32 || c.length > 600_000)) return
-        val tail = if (to.isEmpty()) "" else "|$to|${Crypto.sha256Hex((e + c).toByteArray())}"
+        val og = j.optLong("og", 0L)
+        val isOriginal = id.endsWith("-og")
+        var tail = if (to.isEmpty()) "" else "|$to|${Crypto.sha256Hex((e + c).toByteArray())}"
+        if (og > 0) tail += "|og$og"
         val limit = when (kind) {
             KIND_IMAGE -> ImageUtil.MAX_ORIGINAL
             KIND_VOICE -> MAX_MEDIA
-            KIND_VIDEO -> MAX_VIDEO_BYTES
+            KIND_VIDEO -> if (isOriginal) MAX_ORIGINAL_VIDEO.toInt() else MAX_VIDEO_BYTES
             else -> return
         }
         if (size !in 1..limit || chunks != (size + CHUNK - 1) / CHUNK) return
@@ -1331,6 +1923,8 @@ class NodeSession(
         val listHash = Crypto.sha256Hex(hashes.joinToString(",").toByteArray())
         if (!verified(j, "media|$tag|$id|$sid|$ts|$kind|$size|$chunks|$listHash|$w|$h|$dur|$th$tail")) return
         mediaOrigin[id] = sid
+        if (isOriginal) { acceptOriginalHeader(j, id, sid, kind, size, hashes); return }
+        logFrame("media", id, sid, ts, "", j.toString().toByteArray())
         if (to.isNotEmpty()) mediaTo[id] = to
         if (to.isNotEmpty() && to != myId) return          // someone else's private item: a relay just passes it on
         if (synchronized(seen) { seen.contains(id) }) return
@@ -1377,7 +1971,7 @@ class NodeSession(
             KIND_VOICE -> add(Msg(id, sid, shown, "", ts, voice = id, durMs = dur, dm = dm))
             else -> {
                 thumb?.let { tb -> scope.launch(Dispatchers.IO) { vault.save(tag, thumbKey(id), tb) } }
-                add(Msg(id, sid, shown, "", ts, imgW = w, imgH = h, durMs = dur, video = id, dm = dm))
+                add(Msg(id, sid, shown, "", ts, imgW = w, imgH = h, durMs = dur, video = id, dm = dm, og = og))
             }
         }
     }
@@ -1420,6 +2014,7 @@ class NodeSession(
         assemblies.remove(id, a)
         val hd = a.header
         val kind = hd.getString("k"); val size = hd.getInt("size")
+        if (id.endsWith("-og")) { completeOriginal(id, a, size); return }
         val n = people.label(hd.getString("sid"), hd.getString("n"))
         scope.launch(Dispatchers.IO) {
             try {
@@ -1445,7 +2040,7 @@ class NodeSession(
                     if (isPrivate) dmUnread.update { it + (from to ((it[from] ?: 0) + 1)) }
                 }
                 if (!AppState.foreground && !muted.value) {
-                    Notifier.message(app, displayName(), if (isPrivate) "$n · PRIVATE" else n, when (kind) {
+                    Notifier.message(app, displayName(), if (isPrivate) "$n · PRIVATE" else n, tag = tag, dm = if (isPrivate) from else null, text = when (kind) {
                         KIND_IMAGE -> "IMG · Photo"
                         KIND_VIDEO -> "VID · Video"
                         else -> "VOX · Voice note"
@@ -1745,6 +2340,8 @@ class NodeSession(
     // ---------- History ----------
 
     private fun add(m: Msg) {
+        val life = ttl.value
+        if (life > 0 && !m.system && m.ts < System.currentTimeMillis() - life) return
         synchronized(seen) { if (!seen.add(m.id)) return }
         messages.update { (it + m).sortedBy { x -> x.ts } }
         scheduleSave()
@@ -1763,7 +2360,13 @@ class NodeSession(
 
     companion object {
         private const val REPORT_TTL = 75_000L
-        private val CONTENT_TYPES = setOf("msg", "media", "dm", "react", "edit", "rcpt", "typing", "kick", "kv", "creq", "hosto")
+        private const val LOG_DAYS = 7
+        /** Progress value meaning "waiting for the other phone" (direct links). */
+        const val QUEUED = -2f
+        private const val LOG_MAX = 800
+        private const val LOG_MAX_CHARS = 6_000_000L
+        private val CONTENT_TYPES = setOf("msg", "media", "dm", "react", "edit", "rcpt", "typing", "kick", "kv", "creq", "hosto", "ttl", "pin", "ogreq", "poll", "pvote", "call")
+        private const val MAX_ORIGINAL_VIDEO = 400L * 1024 * 1024
         val REACTIONS = listOf("\uD83D\uDC4D", "\u2764\uFE0F", "\uD83D\uDE02", "\uD83D\uDE2E", "\uD83D\uDD25", "\uD83D\uDC40")
         private const val SEEN_TTL = 10 * 60_000L
         private const val VOTE_EXPIRY_MS = 5 * 60_000L

@@ -445,6 +445,15 @@ const val MAX_VIDEO_MS = 5 * 60_000L          // 5 minutes
 const val MAX_VIDEO_BYTES = 150 * 1024 * 1024  // safety cap after shrinking (High, 5 min is about 100 MB)
 fun videoKey(id: String) = "$id-v"
 fun thumbKey(id: String) = "$id-t"
+fun ogKey(id: String) = "$id-o"
+
+/** "1 HOUR", "1 DAY", "1 WEEK" for a disappearing-messages timer. */
+fun ttlLabel(ms: Long): String = when {
+    ms <= 0 -> "OFF"
+    ms % 604_800_000L == 0L -> "${ms / 604_800_000L} WEEK" + if (ms / 604_800_000L > 1) "S" else ""
+    ms % 86_400_000L == 0L -> "${ms / 86_400_000L} DAY" + if (ms / 86_400_000L > 1) "S" else ""
+    else -> "${ms / 3_600_000L} HOUR" + if (ms / 3_600_000L > 1) "S" else ""
+}
 
 object VideoUtil {
     class Info(val durMs: Long, val w: Int, val h: Int, val thumb: ByteArray?)

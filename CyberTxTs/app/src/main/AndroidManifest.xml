@@ -15,6 +15,8 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- Only for scanning QR invites. Asked the first time you scan. -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Calls: switch between earpiece and speaker -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
 
@@ -27,6 +29,7 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:theme="@style/Theme.CyberTxTs">
 
+        <receiver android:name=".NotifyActions" android:exported="false" />
         <service
             android:name=".SessionService"
             android:exported="false"

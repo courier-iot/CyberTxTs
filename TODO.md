@@ -18,6 +18,23 @@
 - [x] Replies, copy, timestamps with CYCLE date dividers
 - [x] **Internet link (first version):** nodes now work across the internet as well as WiFi. Phones find each other through public Nostr relays (they only see encrypted notes under a hash of the node code), then link directly with WebRTC. WiFi is preferred when both phones share it. Operatives list shows VIA WIFI or VIA NET. Settings > LINK > Internet link (on by default; restart to apply).
 - [x] **QR invites + host verification:** INVITE shows a QR code with the node code, access key and the host's fingerprint, plus a SHARE LINK button (cybertxts:// link opens the app). LINK TO NODE > SCAN QR INVITE. Joining from a QR or link pins the host, so nobody else can claim to be host. Operatives list shows ★ HOST · VERIFIED.
+- [x] **Voice & video calls (1-to-1):** CALL / VID in a contact chat, VOICE CALL / VIDEO CALL from a message's long-press or a Star Map card, Voice call / Video call on a contact card. Direct WebRTC connection, end-to-end encrypted; offer/answer signed with your identity. Mute, speaker, camera on/off, flip, ringtone, missed-call notice.
+- [x] **Reply from the notification:** Reply, Mark read and Mute node buttons on message alerts (hidden while app lock is on).
+- [x] **Polls:** ⋮ > NEW POLL (2-6 options); signed one-vote-each, change or take back your vote.
+- [x] **Privacy switches:** Settings > Chats & media > Privacy: send read marks / typing signal (off = you don't see others' either).
+- [x] **Drafts and scheduled messages:** unsent text stays per chat; ⋮ > SCHEDULE MESSAGE (15 min, 1 h, 9 am tomorrow, custom hours); "N SCHEDULED" bar to cancel.
+- [x] **Signed receipts and typing signals; "EDITED 21:45" times.**
+- [x] **Accessibility pass:** spoken message headers ("From Vega, 9:41 PM, delivered"), headings, announced typing and call status, switch on/off states, labelled reactions and polls, larger touch targets, less text cut-off at big font sizes.
+- [x] **Battery & data tracker:** Settings > Battery & data: drain per hour while unplugged, 24 h battery chart, CyberTxTs CPU time, data on WiFi vs mobile, links open, tips, link to Android's battery page. Readings every 10 min, stored on the phone only.
+- [x] **Search:** ⋮ > SEARCH in any chat (tap a result to jump to it); nodes menu > SEARCH ALL CHATS across every node and contact.
+- [x] **Disappearing messages:** ⋮ > DISAPPEARING: Off / 1 hour / 1 day / 1 week, per node or contact, signed, synced to everyone (including phones that were away); expired messages, photos and videos are deleted and never redistributed by catch-up.
+- [x] **@mentions:** type @ for suggestions; a mention highlights the bubble, shows @YOU, and notifies even when the node is muted.
+- [x] **Pins + media gallery:** long-press > PIN (signed, synced); a PINNED bar cycles through pins. ⋮ > MEDIA shows every photo and video in the chat.
+- [x] **Forwarding:** long-press > FORWARD to any node or contact (text, photo, VOX, video).
+- [x] **Original-quality video:** choose Original when sending a video: everyone gets Standard now, the untouched file (up to 400 MB) stays on your phone, and others tap DOWNLOAD ORIGINAL to get it from you.
+- [x] **Catch-up on missed messages:** each phone keeps a week of signed messages, private messages (still sealed), photo/video/VOX headers, edits and reactions. When two phones link they swap what the other is missing, exactly as signed. Photos and videos are re-sent from storage. Newcomers never get messages from before they joined; retracted messages aren't handed out again.
+- [x] **One shared relay connection:** every node, contact and offer now shares one connection to each of the 4 relays (one subscription, routed by topic) instead of 4 websockets each.
+- [x] **Queued media for contacts:** photos, VOX and video to an offline contact show "QUEUED · SENDS WHEN THEY'RE ONLINE" and go out when you link (photos/videos survive a restart; VOX only while the app is running). Cancel available.
 - [x] **Contacts + direct links:** Contacts (nodes menu, or the home screen) lists 1-to-1 links that work with no shared node: photos, VOX, video, receipts, typing, reactions, edit/retract all work. Add by scanning each other's code in person (✓ VERIFIED), from a node (long-press a message > ADD CONTACT, or the Star Map card), or by sharing a contact link (single use, 7 days, you approve it). Texts sent while they're offline queue and send themselves when you're both online. Contact card: fingerprint, verify, private note, nickname, remove, block. Included in backups and phone moves; follows someone who moves phones.
 - [x] **Look-alike warning:** a new ID using the callsign of someone you already know shows "⚠ NEW OPERATIVE · NOT THE VEGA YOU KNOW" in the log, Operatives list and Star Map card (with both fingerprints). "I know them" stops the warning.
 - [x] **Full fingerprints:** 32-character fingerprint on every operative card and in Settings, to compare in person.
@@ -65,7 +82,7 @@
 - [ ] Re-run the earlier feature tests (kick + key rotation, media qualities, VOX, background link)
 
 ## Next (agreed)
-- [ ] Original-quality VID by tap-to-download: everyone gets the shrunk version; only those who tap DOWNLOAD get the original; resumable; later, other phones help share pieces
+- [ ] Original video downloads: resume after a dropped link; let other phones that downloaded it share it too
 
 ## Follow-ups
 - [ ] Faster sharing in big nodes (one slow phone slows everyone; 25 copies uploaded)
@@ -80,6 +97,39 @@
 - [ ] Settings > Internet link OFF, restart: only WiFi links remain
 - [ ] Note which network combinations fail to link (some mobile carriers and work/school WiFi block direct links)
 
+## Test calls, polls, notifications (update ALL phones together)
+- [ ] Contact chat > CALL: other phone rings (also with the app in the background: notification); Answer; both hear each other; Mute, Speaker, End
+- [ ] VID call: both videos show; Cam off, Flip; answer a video call as Voice only
+- [ ] Call someone already on a call: "Busy on another call"; don't answer for 45 s: "No answer" / "Missed call"
+- [ ] Call between phones on different networks (mobile data vs WiFi)
+- [ ] Notification Reply sends the message; Mark read clears unread; Mute node mutes it
+- [ ] Poll: 3 phones vote, counts match everywhere; change and take back a vote
+- [ ] Privacy: turn read marks off: others stop seeing READ from you; you stop seeing theirs
+- [ ] Type half a message, leave the chat and come back: draft is still there; schedule one for 15 min: it sends
+- [ ] TalkBack on: messages read as "From Vega, 9:41 PM, delivered"; switches say On/Off; typing is announced
+
+## Later
+- [ ] Desktop companion (parked in /parked/companion: browser on the same WiFi, encrypted with a pairing code)
+- [ ] Group calls in nodes (calls are 1-to-1 for now)
+- [ ] Keep a call going with the app in the background (needs a microphone/camera foreground service)
+
+## Test this round (update ALL phones together)
+- [ ] Settings > Battery & data: readings appear after ~10 min; chart fills over a few hours; Reset clears it
+- [ ] ⋮ > SEARCH finds a word; tapping a result scrolls to it and flashes the bubble; SEARCH ALL CHATS opens the right node / contact
+- [ ] Set disappearing to 1 hour: everyone sees "SET TO 1 HOUR BY …"; a phone that was offline picks it up when it relinks; old messages vanish
+- [ ] Mute a node, then get @mentioned there: notification still arrives ("@YOU · …")
+- [ ] Pin two messages: PINNED 1/2 bar cycles; unpin works on every phone
+- [ ] Forward a photo and a text from a node to a contact
+- [ ] Send a video as Original: others see DOWNLOAD ORIGINAL · size; tapping it downloads and shows ORIGINAL QUALITY ✓
+
+## Test catch-up, shared relays, queued media (update ALL phones together)
+- [ ] Node with A, B, C: close B's app, chat on A and C (text, photo, reaction, edit, retract one), reopen B: everything arrives in order; the retracted one doesn't
+- [ ] Private message to B while B is away: arrives when B relinks (even if only C is online)
+- [ ] Invite a brand-new phone D: it does NOT receive last week's messages
+- [ ] Settings > Network diagnostics: relays still show 4/4 with several nodes and contacts open
+- [ ] Contact offline: send a photo and a video: QUEUED; contact comes online: both send; Cancel works on a queued item
+- [ ] Battery: compare overnight drain with a few nodes and contacts against the last build
+
 ## Test contacts (update ALL phones together)
 - [ ] A: Contacts > + ADD shows a QR; B: Contacts > + ADD > SCAN THEIR CODE: both list each other within ~30 s; B shows ✓ VERIFIED; A taps Verify and scans B to verify too
 - [ ] Direct chat with no shared node: text, IMG, VOX, VID, reactions, READ marks, TRANSMITTING…
@@ -91,8 +141,6 @@
 - [ ] Backup / move to a new phone: contacts and direct logs come across; the contact sees "MOVED TO A NEW DEVICE" in your direct chat
 
 ## Contacts follow-ups
-- [ ] Each direct link keeps its own relay connections; with many contacts, share one connection to save battery
-- [ ] Photos / VOX / video in a direct link need both online (texts queue); queue media too
 
 ## Test identity + security round (update ALL phones together)
 - [ ] Look-alike: on a spare phone, pick the SAME callsign as an existing operative and link: everyone sees the ⚠ warning; "I know them" clears it
@@ -135,8 +183,6 @@
 - [ ] Two phones remove the same person at nearly the same moment: everyone ends on the same key (no split)
 
 ## Everyday follow-ups
-- [ ] Sign receipts and typing signals (currently unsigned; only node members can send them)
-- [ ] Edit history / "edited at" time
 
 ## Test the Star Map and relaying (3 phones)
 - [ ] STAR MAP > MY LINKS: each operative shows VIA WIFI / VIA NET and a delay in ms within ~20 s; dots pulse while sending a photo

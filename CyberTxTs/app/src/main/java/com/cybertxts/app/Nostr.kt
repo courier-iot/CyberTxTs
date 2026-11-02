@@ -152,49 +152,75 @@ object Schnorr {
 }
 
 /**
- * Meeting point on public Nostr relays. Phones in the same node publish short "ephemeral" events
- * (relays pass them on but don't store them) under a topic derived from the node code.
- * The event content is always encrypted with the node key, so relays only ever see opaque data.
+ * One set of relay connections for the whole app. Every node, contact link and offer used to open its own
+ * four websockets; now they all share these, each listening on its own topic (all topics go in one
+ * subscription per relay, and incoming events are routed by topic).
  */
-class NostrPool(
-    private val relays: List<String> = DEFAULT_RELAYS,
-    private val onContent: (String) -> Unit
-) {
+object RelayHub {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val http = OkHttpClient.Builder().pingInterval(30, TimeUnit.SECONDS).build()
     private val sockets = ConcurrentHashMap<String, WebSocket>()
-    private val seen = object : LinkedHashMap<String, Boolean>(512, 0.75f, false) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>?) = size > 2000
+    private val loops = ConcurrentHashMap<String, kotlinx.coroutines.Job>()
+    private val listeners = ConcurrentHashMap<String, java.util.concurrent.CopyOnWriteArrayList<(String) -> Unit>>()
+    private val seen = object : LinkedHashMap<String, Boolean>(1024, 0.75f, false) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>?) = size > 5000
     }
-    private val key = Schnorr.newKey()
-    private val subId = "c" + Schnorr.sha256Hex(System.nanoTime().toString()).take(12)
-    @Volatile private var topic = ""
-    @Volatile private var stopped = false
+    private const val SUB = "cybertxts"
+    @Volatile private var reqJob: kotlinx.coroutines.Job? = null
+    @Volatile private var idleJob: kotlinx.coroutines.Job? = null
 
-    fun start(topic: String) {
-        this.topic = topic
-        relays.forEach { url -> scope.launch { connectLoop(url) } }
+    fun subscribe(topic: String, onContent: (String) -> Unit) {
+        idleJob?.cancel()
+        listeners.getOrPut(topic) { java.util.concurrent.CopyOnWriteArrayList() }.add(onContent)
+        NostrPool.DEFAULT_RELAYS.forEach { url ->
+            loops.computeIfAbsent(url) { scope.launch { connectLoop(url) } }
+        }
+        resubscribeSoon()
+    }
+
+    fun unsubscribe(topic: String, onContent: (String) -> Unit) {
+        listeners[topic]?.let { l -> l.remove(onContent); if (l.isEmpty()) listeners.remove(topic) }
+        resubscribeSoon()
+        if (listeners.isEmpty()) {
+            // Nothing left to listen for: hang up after a short grace period (a node may be restarting)
+            idleJob = scope.launch {
+                delay(15_000)
+                if (listeners.isEmpty()) {
+                    loops.values.forEach { it.cancel() }; loops.clear()
+                    sockets.values.forEach { runCatching { it.close(1000, null) } }; sockets.clear()
+                }
+            }
+        }
+    }
+
+    /** Topic changes are batched, then one updated subscription goes to every relay. */
+    private fun resubscribeSoon() {
+        reqJob?.cancel()
+        reqJob = scope.launch { delay(300); sockets.values.forEach { sendReq(it) } }
+    }
+
+    private fun sendReq(ws: WebSocket) {
+        val topics = JSONArray(); listeners.keys.forEach { topics.put(it) }
+        if (topics.length() == 0) { runCatching { ws.send(JSONArray().put("CLOSE").put(SUB).toString()) }; return }
+        val filter = JSONObject().put("kinds", JSONArray().put(NostrPool.KIND)).put("#t", topics)
+            .put("since", System.currentTimeMillis() / 1000 - 60)
+        runCatching { ws.send(JSONArray().put("REQ").put(SUB).put(filter).toString()) }
     }
 
     private suspend fun connectLoop(url: String) {
         var backoff = 3_000L
-        while (!stopped) {
+        while (true) {
             val closed = kotlinx.coroutines.CompletableDeferred<Unit>()
             val ws = http.newWebSocket(Request.Builder().url(url).build(), object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
                     sockets[url] = webSocket
-                    val filter = JSONObject().put("kinds", JSONArray().put(KIND)).put("#t", JSONArray().put(topic))
-                        .put("since", System.currentTimeMillis() / 1000 - 60)
-                    webSocket.send(JSONArray().put("REQ").put(subId).put(filter).toString())
+                    sendReq(webSocket)
                 }
                 override fun onMessage(webSocket: WebSocket, text: String) = handle(text)
                 override fun onClosed(webSocket: WebSocket, code: Int, reason: String) { closed.complete(Unit) }
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) { closed.complete(Unit) }
             })
-            closed.await()
-            sockets.remove(url)
-            runCatching { ws.cancel() }
-            if (stopped) break
+            try { closed.await() } finally { sockets.remove(url); runCatching { ws.cancel() } }
             delay(backoff)
             backoff = minOf(backoff * 2, 60_000L)
         }
@@ -205,46 +231,74 @@ class NostrPool(
             val arr = JSONArray(text)
             if (arr.optString(0) != "EVENT") return
             val ev = arr.getJSONObject(2)
+            if (ev.optInt("kind") != NostrPool.KIND) return
             val id = ev.optString("id")
             synchronized(seen) {
                 if (seen.containsKey(id)) return
                 seen[id] = true
             }
-            if (ev.optInt("kind") != KIND) return
             val content = ev.optString("content")
             if (content.isEmpty() || content.length > 400_000) return
-            onContent(content)
+            val tags = ev.optJSONArray("tags") ?: return
+            for (i in 0 until tags.length()) {
+                val tg = tags.optJSONArray(i) ?: continue
+                if (tg.optString(0) == "t") listeners[tg.optString(1)]?.forEach { cb -> runCatching { cb(content) } }
+            }
         } catch (_: Exception) {}
     }
 
-    /** Publish one event (content must be plain base64 text) to every connected relay. */
-    fun publish(content: String) {
-        if (stopped || topic.isEmpty()) return
+    /** Publish one event on [topic], signed with that subscriber's own throwaway key. */
+    fun publish(topic: String, key: Pair<ByteArray, ByteArray>, content: String) {
         scope.launch {
             try {
                 val pub = Schnorr.hex(key.second)
                 val created = System.currentTimeMillis() / 1000
                 // NIP-01 id: sha256 of [0,pubkey,created_at,kind,tags,content] with no spaces
-                val serial = "[0,\"$pub\",$created,$KIND,[[\"t\",\"$topic\"]],\"$content\"]"
+                val serial = "[0,\"$pub\",$created,${NostrPool.KIND},[[\"t\",\"$topic\"]],\"$content\"]"
                 val idBytes = MessageDigest.getInstance("SHA-256").digest(serial.toByteArray())
                 val sig = Schnorr.sign(key.first, idBytes)
                 val ev = JSONObject()
                     .put("id", Schnorr.hex(idBytes)).put("pubkey", pub).put("created_at", created)
-                    .put("kind", KIND).put("tags", JSONArray().put(JSONArray().put("t").put(topic)))
+                    .put("kind", NostrPool.KIND).put("tags", JSONArray().put(JSONArray().put("t").put(topic)))
                     .put("content", content).put("sig", Schnorr.hex(sig))
                 val msg = JSONArray().put("EVENT").put(ev).toString()
+                synchronized(seen) { seen[Schnorr.hex(idBytes)] = true }      // don't hand our own event back to us
                 sockets.values.forEach { runCatching { it.send(msg) } }
             } catch (_: Exception) {}
         }
     }
 
     fun connectedRelays(): Int = sockets.size
+}
+
+/**
+ * One node's (or contact link's) presence on the relays: a topic derived from the node code, on the shared
+ * RelayHub connections. Events are ephemeral (relays pass them on but don't store them) and their content is
+ * always encrypted with the node key, so relays only ever see opaque data.
+ */
+class NostrPool(private val onContent: (String) -> Unit) {
+    private val key = Schnorr.newKey()          // a fresh throwaway signing key per node, so topics can't be tied together by key
+    @Volatile private var topic = ""
+    @Volatile private var stopped = false
+    private val cb: (String) -> Unit = { c -> if (!stopped) onContent(c) }
+
+    fun start(topic: String) {
+        this.topic = topic
+        RelayHub.subscribe(topic, cb)
+    }
+
+    /** Publish one event (content must be plain base64 text) to every connected relay. */
+    fun publish(content: String) {
+        if (stopped || topic.isEmpty()) return
+        RelayHub.publish(topic, key, content)
+    }
+
+    fun connectedRelays(): Int = RelayHub.connectedRelays()
 
     fun stop() {
+        if (stopped) return
         stopped = true
-        sockets.values.forEach { runCatching { it.close(1000, null) } }
-        sockets.clear()
-        scope.cancel()
+        if (topic.isNotEmpty()) RelayHub.unsubscribe(topic, cb)
     }
 
     companion object {

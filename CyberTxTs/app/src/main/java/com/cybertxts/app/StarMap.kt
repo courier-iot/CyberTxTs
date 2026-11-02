@@ -106,6 +106,7 @@ private fun DrawScope.meStar(c: Offset, r: Float) {
 fun StarMapView(
     vm: NodeSession, alsoIn: (String) -> List<String>,
     isContact: (String) -> Boolean = { false }, onAddContact: (String) -> Unit = {},
+    onCall: (String, Boolean) -> Unit = { _, _ -> },
     onMessage: (String) -> Unit = {}
 ) {
     var mesh by remember { mutableStateOf(false) }
@@ -237,7 +238,8 @@ fun StarMapView(
             if (sel != null) {
                 OperativeCard(vm, sel, hostId == vm.myId, alsoIn(sel.id), byId, Modifier.align(Alignment.BottomCenter),
                     onMessage = { selected = null; onMessage(it) },
-                    isContact = isContact(sel.id), onAddContact = { onAddContact(sel.id) }) { selected = null }
+                    isContact = isContact(sel.id), onAddContact = { onAddContact(sel.id) },
+                    onCall = { v -> onCall(sel.id, v) }) { selected = null }
             }
         }
 
@@ -300,6 +302,7 @@ fun OperativeCard(
     vm: NodeSession, p: NodeSession.MapPeer, iAmHost: Boolean, alsoIn: List<String>,
     byId: Map<String, NodeSession.MapPeer>, modifier: Modifier = Modifier, onMessage: (String) -> Unit = {},
     isContact: Boolean = true, onAddContact: () -> Unit = {},
+    onCall: (Boolean) -> Unit = {},
     onClose: () -> Unit
 ) {
     val nicks by vm.people.nicknames.collectAsStateWithLifecycle()
@@ -398,6 +401,10 @@ fun OperativeCard(
             else if (!p.host) GhostButton("Vote out", Modifier.weight(1f), color = Holo.Danger) { confirm = true }
         }
         if (iAmHost && p.linked) GhostButton("Make host", Modifier.fillMaxWidth(), color = Gold) { makeHost = true }
+        if (p.linked) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            GhostButton("Voice call", Modifier.weight(1f), color = Holo.Primary) { onCall(false) }
+            GhostButton("Video call", Modifier.weight(1f), color = Holo.Primary) { onCall(true) }
+        }
         if (!isContact && p.linked) GhostButton("Add contact", Modifier.fillMaxWidth(), color = Holo.Primary) { onAddContact() }
     }
 }

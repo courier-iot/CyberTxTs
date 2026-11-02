@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -59,6 +60,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         onAny = { ensureService() }
     )
 
+    /** Voice and video calls. */
+    val calls = CallManager(app, viewModelScope) { id -> people.label(id, "Operative") }
+
     /** A contact link or QR opened from outside the app, waiting for confirmation. */
     val pendingContact = MutableStateFlow<ContactOffer?>(null)
 
@@ -73,7 +77,38 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         restore()
         contacts.restore()
         ensureService()
+        // Battery & data tracker: one reading every 10 minutes while the app runs
+        viewModelScope.launch(Dispatchers.Default) {
+            delay(20_000)
+            while (true) {
+                runCatching { UsageTracker.sample(getApplication(), prefs, linkCount(), nodes.value.size + contacts.sessions.value.size) }
+                usageTick.value++
+                delay(10 * 60_000L)
+            }
+        }
     }
+
+    /** Bumps whenever a new battery/data reading is stored. */
+    val usageTick = MutableStateFlow(0)
+    fun usagePrefs() = prefs
+    fun resetUsage() { UsageTracker.reset(prefs); usageTick.value++ }
+    fun linkCount(): Int = (nodes.value + contacts.sessions.value.values).sumOf { it.peers.value }
+
+    fun sessionByTag(tag: String): NodeSession? =
+        nodes.value.firstOrNull { it.tag == tag } ?: contacts.sessions.value.values.firstOrNull { it.tag == tag }
+
+    /** Open the chat holding [m] (a node or a contact) and scroll to it. */
+    fun openMessage(s: NodeSession, m: Msg) {
+        val contactId = contacts.sessions.value.entries.firstOrNull { it.value === s }?.key
+        if (contactId != null) { contactsOpen.value = true; directChat.value = contactId }
+        else { directChat.value = null; contactsOpen.value = false; select(s) }
+        s.jumpTo.value = m.id
+    }
+
+    /** Every node and contact chat, labelled, for search and forwarding. */
+    fun allChats(): List<Pair<String, NodeSession>> =
+        nodes.value.map { it.displayName() to it } +
+            contacts.sessions.value.map { (id, s) -> (people.label(id, "Contact") + " · DIRECT") to s }
 
     private fun ensureService() {
         if (settings.value.keepAlive && (nodes.value.isNotEmpty() || contacts.list.value.isNotEmpty())) SessionService.start(getApplication())
@@ -104,7 +139,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         onSuccession = { c -> viewModelScope.launch(Dispatchers.Default) { runCatching { applySuccession(c) } } },
         directPeer = peer,
         onContactRequest = { src, from, n, secret, via -> runCatching { contacts.onRequest(src, from, n, secret, via) } },
-        onPeersChanged = { src, ids -> if (peer != null) runCatching { contacts.onDirectPeers(src, ids) } }
+        onPeersChanged = { src, ids -> if (peer != null) runCatching { contacts.onDirectPeers(src, ids) } },
+        onCall = { src, j -> runCatching { calls.onSignal(src, j) } }
     )
 
     fun offerContact(o: ContactOffer?) { if (o != null) pendingContact.value = o }
@@ -304,7 +340,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private val globalKeys = listOf("profile_name", "nodes", "active_tag", "rec_pub", "succ_chain", "succ_done",
         Contacts.KEY_LIST, Contacts.KEY_REQ, Contacts.KEY_BLOCK) + PeopleBook.KEYS
-    private val nodePrefixes = listOf("host_", "hostpin_", "hostcert_", "hostts_", "nick_", "mute_", "bans_", "excl_", "bundles_", "prev_", "s_", "dlv_")
+    private val nodePrefixes = listOf("host_", "hostpin_", "hostcert_", "hostts_", "nick_", "mute_", "bans_", "excl_", "bundles_", "prev_", "s_", "dlv_", "joined_", "ttl_", "ttlts_", "ttlcert_", "sched_", "draft_")
 
     /** Everything worth carrying to a new phone. Never includes keys: this phone's keys stay on this phone. */
     private fun snapshot(includeHistory: Boolean): JSONObject {
@@ -520,6 +556,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             nodes.value = emptyList(); active.value = null
             list.forEach { runCatching { it.close() } }
             contacts.stopAll()
+            calls.hangUp()
             SessionService.stop(getApplication())
             runCatching { store.deleteAll() }; runCatching { vault.deleteAll() }
             prefs.edit().clear().commit()

@@ -54,6 +54,10 @@ class PeopleBook(private val prefs: SharedPreferences) {
 
     fun alias(id: String, fallback: String): String = aliases.value[id] ?: fallback
 
+    /** When this phone first met [id] (in any node), or null if never. */
+    fun firstSeenAt(id: String): Long? =
+        firstSeen[id]?.toLongOrNull() ?: if (aliases.value.containsKey(id)) 0L else null   // met before this was recorded
+
     fun nickname(id: String): String? = nicknames.value[id]?.takeIf { it.isNotBlank() }
 
     /** What to show for a person: your nickname if you set one, otherwise their permanent alias. */
