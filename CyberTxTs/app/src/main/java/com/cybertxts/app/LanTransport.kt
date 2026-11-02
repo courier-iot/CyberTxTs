@@ -323,7 +323,7 @@ class LanTransport(context: Context) : Transport {
     /** Found on WiFi for 20 s or more but still not linked: the router is probably blocking phone-to-phone traffic. */
     fun stuck(): Set<String> {
         val cutoff = System.currentTimeMillis() - 20_000
-        return known.keys.filter { it !in conns && (foundAt[it] ?: Long.MAX_VALUE) < cutoff }.toSet()
+        return known.keys.filter { !conns.containsKey(it) && (foundAt[it] ?: Long.MAX_VALUE) < cutoff }.toSet()
     }
 
     /** True when this phone is on WiFi (or Ethernet) right now. */
