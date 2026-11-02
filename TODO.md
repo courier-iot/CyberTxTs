@@ -16,6 +16,7 @@
 - [x] TX/RX progress, every piece verified
 - [x] Background link service, comm-chirp alerts, encrypted message log with auto-purge
 - [x] Replies, copy, timestamps with CYCLE date dividers
+- [x] **Internet link (first version):** nodes now work across the internet as well as WiFi. Phones find each other through public Nostr relays (they only see encrypted notes under a hash of the node code), then link directly with WebRTC. WiFi is preferred when both phones share it. Operatives list shows VIA WIFI or VIA NET. Settings > LINK > Internet link (on by default; restart to apply).
 - [x] **New:** Holo Glass UI on every screen (callsign, spin up / link, nodes menu, chat, full-screen settings), Night ops / Day shift themes, planet icon, comm chirp, Orbitron / Rajdhani / Share Tech Mono
 
 ## First build checklist (new repo)
@@ -49,11 +50,21 @@
 - [ ] Emoji reactions (optional); long-press menu directly on IMG / VID
 - [ ] Glow effect on panels (the mockups' soft neon halo; skipped in the app for now)
 
-## Internet phase (later)
-- [ ] WebRTC transport with serverless discovery (Nostr relays or BitTorrent trackers) keyed by a hash of the node code
-- [ ] STUN, plus optional encrypted relay fallback
-- [ ] Gossip design for 25-operative nodes over mobile data
-- [ ] Per-node WiFi-only / internet switch
+## Test the internet link (needs 2+ phones on DIFFERENT networks)
+- [ ] Phone A on home WiFi, phone B on mobile data: link to the same node; header shows LINK 2/25 within about 30 s
+- [ ] Operatives list shows "VIA NET"; put both on the same WiFi and it should switch to "VIA WIFI" after relinking
+- [ ] Text, IMG, VOX and a short VID over NET; check TX/RX progress
+- [ ] Remove someone over NET: key rotates; a phone that was offline catches up when it comes back
+- [ ] Settings > Internet link OFF, restart: only WiFi links remain
+- [ ] Note which network combinations fail to link (some mobile carriers and work/school WiFi block direct links)
+
+## Internet link: known limits and next steps
+- [ ] **No relay fallback yet:** roughly 10-20% of network pairs (strict carrier or corporate firewalls) can't link directly. Fix: an optional encrypted TURN relay (would need a small server, or a free TURN service)
+- [ ] Full mesh: every phone uploads its own copy of each item to every other phone. Fine for small nodes; for 25 operatives on mobile data, add relaying through other phones (gossip)
+- [ ] Changing "Internet link" needs an app restart; make it apply live
+- [ ] Choose / add your own relays in Settings
+- [ ] Battery and data use check on mobile data
+- [ ] Peers can see each other's IP address (normal for direct links); a relay fallback could hide it as an option
 
 ---
 

@@ -1,6 +1,6 @@
 # CyberTxTs
 
-**By Stellarite.** Serverless, end-to-end encrypted group comms for Android. Phones on the same WiFi link directly to each other; there is no server.
+**By Stellarite.** Serverless, end-to-end encrypted group comms for Android. Phones link directly to each other, on the same WiFi or across the internet. There is no CyberTxTs server.
 
 ## Features
 - **Nodes** (chat rooms): spin one up (you're the host) or link to one with its node code + access key. Be linked to several at once; switch from the ≡ nodes menu. Up to 25 operatives each.
@@ -8,6 +8,7 @@
 - **Identity:** each install has a hardware-backed key; your OP-ID comes from it and every message is signed. Your **callsign** is chosen once at first launch and is permanent. Give other operatives private **nicknames** only you see.
 - **Encryption:** everything is end-to-end encrypted with a key derived from the access key. After someone is removed (host kick or majority vote), the access key rotates automatically for everyone else; offline operatives catch up when they reconnect.
 - **Media:** IMG (Saver / Standard / High / Original), VID up to 5 minutes (360p / 480p / 720p), VOX notes up to 2 minutes (never stored). TX/RX progress; every piece is verified.
+- **Internet link:** phones find each other through public Nostr relays (they only ever see encrypted notes under a hash of the node code), then talk directly over WebRTC. WiFi is used instead when both phones share it.
 - **Holds link** in the background with a notification; comm-chirp message alerts.
 - **Message log** saved encrypted on the device only, with auto-purge options.
 - **Look:** Holo Glass. Deep-space Night ops theme (neon cyan for you, crimson for others) or Day shift; open clipped-corner panels; log-style names (`VEGA//7F3A · 21:04`); IMG / VOX / TX readouts; Orbitron, Rajdhani and Share Tech Mono fonts.
@@ -23,7 +24,9 @@ CyberTxTs/                              Android project (Kotlin + Jetpack Compos
     CyberApp.kt         app startup; owns the one long-lived ChatViewModel
     ChatViewModel.kt    callsign, settings, list of nodes
     NodeSession.kt      one node: messages, operatives, kicks/votes, key rotation, media sending
-    LanTransport.kt     WiFi discovery (mDNS) + encrypted direct links (swappable for internet later)
+    LanTransport.kt     WiFi discovery (mDNS) + encrypted direct links
+    InternetTransport.kt  internet links: WebRTC data channels, plus MultiTransport (WiFi + internet together)
+    Nostr.kt            relay discovery (public Nostr relays) and the small Schnorr signer relays require
     Transport.kt        the swappable transport interface; 25-operative limit
     Crypto.kt           AES-GCM, PBKDF2, sealing keys to operatives
     Identity.kt         per-install keys and signing

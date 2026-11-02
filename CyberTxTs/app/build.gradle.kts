@@ -58,4 +58,8 @@ dependencies {
     implementation("androidx.media3:media3-transformer:1.4.1")
     implementation("androidx.media3:media3-effect:1.4.1")
     implementation("androidx.media3:media3-common:1.4.1")
+
+    // Internet link: direct phone-to-phone WebRTC data channels, and relay websockets for finding each other
+    implementation("io.getstream:stream-webrtc-android:1.1.1")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }

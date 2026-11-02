@@ -291,6 +291,8 @@ class LanTransport(context: Context) : Transport {
         conns[id]?.let { runCatching { it.socket.close() } }
     }
 
+    fun isConnected(id: String) = conns.containsKey(id)
+
     override fun stop() {
         scope.cancel()
         resolveQueue.close()

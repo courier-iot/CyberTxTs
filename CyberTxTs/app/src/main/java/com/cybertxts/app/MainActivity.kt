@@ -345,6 +345,12 @@ fun SettingsDialog(
                     }
                 }
                 SettingsSection("LINK") {
+                    SettingRow(
+                        "Internet link",
+                        "Reach operatives anywhere, not just on your WiFi. Content stays end-to-end encrypted; " +
+                            "linked operatives can see your IP address. Takes effect after restarting the app.",
+                        s.internet
+                    ) { onChange(s.copy(internet = it)) }
                     SettingRow("Hold link in background", "Stays connected with the screen off. Uses more battery.", s.keepAlive) {
                         onChange(s.copy(keepAlive = it))
                     }
@@ -508,7 +514,7 @@ fun HomeScreen(vm: ChatViewModel, alias: String, canCancel: Boolean, onDone: () 
                     enabled = !joining && createPw.length >= 6, modifier = Modifier.fillMaxWidth(), height = 52
                 ) { vm.join(newCode, createPw, created = true); onDone() }
             } else {
-                InfoCard("", "Enter the node code and access key from whoever spun it up. You both need to be on the same WiFi.")
+                InfoCard("", "Enter the node code and access key from whoever spun it up. Works on the same WiFi or across the internet.")
                 Spacer(Modifier.height(16.dp))
                 OutlinedTextField(joinCode, { joinCode = it }, label = { Text("Node code") }, singleLine = true,
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters), shape = fieldShape,
@@ -696,7 +702,8 @@ fun MembersDialog(
                                 },
                                 fontWeight = FontWeight.Bold
                             )
-                            MonoLabel(opTag(m.name, m.id) + (if (nick != null) " · CALLSIGN" else ""), Holo.Primary)
+                            MonoLabel(opTag(m.name, m.id) + (if (nick != null) " · CALLSIGN" else "") +
+                                (if (m.isMe) "" else vm.route(m.id)?.let { " · VIA $it" } ?: ""), Holo.Primary)
                             val v = votes[m.id]
                             if (v != null) {
                                 Text("REMOVAL VOTE · ${v.yes.size} YES · ${v.no.size} NO", fontFamily = Mono,
@@ -846,7 +853,7 @@ fun ChatScreen(vm: NodeSession, onOpenMenu: () -> Unit, onOpenSettings: () -> Un
         val send = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
             putExtra(Intent.EXTRA_TEXT,
-                "Link to my CyberTxTs node.\nNode code: ${room.code}\nAccess key: ${room.password}\n(Be on the same WiFi.)")
+                "Link to my CyberTxTs node.\nNode code: ${room.code}\nAccess key: ${room.password}\n(Works over WiFi or the internet.)")
         }
         ctx.startActivity(Intent.createChooser(send, "Invite to node"))
     }
@@ -971,9 +978,9 @@ fun ChatScreen(vm: NodeSession, onOpenMenu: () -> Unit, onOpenSettings: () -> Un
                 room.created && !searchedTooLong ->
                     "Node online. Tap INVITE to share the code and access key, then wait for operatives to link." to Holo.Primary
                 !room.created && !searchedTooLong ->
-                    "Scanning the WiFi for this node…" to Holo.Primary
+                    "Scanning WiFi and the net for this node…" to Holo.Primary
                 else ->
-                    "No link found. Check the WiFi and node code. If someone was removed recently, the access key may have rotated: ask an operative for the new one." to Holo.Danger
+                    "No link found. Check the node code and your connection. If someone was removed recently, the access key may have rotated: ask an operative for the new one." to Holo.Danger
             }
             Text(text, style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.fillMaxWidth().padding(10.dp).openPanel(Holo.Panel, color.copy(alpha = 0.7f)).padding(10.dp))

@@ -152,7 +152,8 @@ class NodeSession(
                 ?.forEach { if (System.currentTimeMillis() - it.lastModified() > 3_600_000) it.delete() }
         }
 
-        val t = LanTransport(app)
+        // WiFi always; internet too unless switched off in Settings
+        val t = MultiTransport(app, settings.value.internet)
         synchronized(banned) { banned.forEach { t.ban(it) } }
         transport = t
         t.start(myId, tag, curKid, key, ::onFrame, ::onPeers, ::rescueFor)
@@ -316,6 +317,9 @@ class NodeSession(
     // ---------- Naming ----------
 
     fun displayName(): String = nickname.value.ifBlank { room.value.code }
+
+    /** How a linked operative is reached right now: "WIFI", "NET", or null. */
+    fun route(id: String): String? = (transport as? MultiTransport)?.route(id)
 
     fun rename(name: String) {
         val n = name.trim().take(30)
