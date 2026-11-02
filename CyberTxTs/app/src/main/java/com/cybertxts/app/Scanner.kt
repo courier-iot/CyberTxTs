@@ -138,6 +138,22 @@ object QrDecode {
  */
 @Composable
 fun ScanInviteScreen(onInvite: (Invite) -> Unit, onClose: () -> Unit) {
+    ScanQrScreen(
+        title = "SCAN INVITE", subtitle = "QR · NODE CODE + ACCESS KEY + HOST FINGERPRINT",
+        hint = "ALIGN THE INVITE QR INSIDE THE FRAME", wrong = "NOT A CYBERTXTS INVITE",
+        accept = { text -> InviteLink.parse(text)?.let { onInvite(it); true } ?: false },
+        onClose = onClose
+    )
+}
+
+/**
+ * The same scan screen for any CyberTxTs QR. [accept] returns true once it has taken the code.
+ */
+@Composable
+fun ScanQrScreen(
+    title: String, subtitle: String, hint: String, wrong: String,
+    accept: (String?) -> Boolean, onClose: () -> Unit
+) {
     val ctx = LocalContext.current
     val haptics = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
@@ -152,16 +168,14 @@ fun ScanInviteScreen(onInvite: (Invite) -> Unit, onClose: () -> Unit) {
 
     fun handle(text: String?, fromGallery: Boolean) {
         if (done) return
-        val inv = InviteLink.parse(text)
-        if (inv != null) {
+        if (accept(text)) {
             done = true
             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-            onInvite(inv)
         } else if (fromGallery) {
-            warning = if (text == null) "NO QR CODE FOUND IN THAT PICTURE" else "NOT A CYBERTXTS INVITE"
+            warning = if (text == null) "NO QR CODE FOUND IN THAT PICTURE" else wrong
         } else if (text != lastBad) {
             lastBad = text
-            warning = "NOT A CYBERTXTS INVITE"
+            warning = wrong
         }
     }
 
@@ -174,7 +188,7 @@ fun ScanInviteScreen(onInvite: (Invite) -> Unit, onClose: () -> Unit) {
             handle(text, fromGallery = true)
         }
     }
-    LaunchedEffect(Unit) { if (!hasCamera) permission.launch(Manifest.permission.CAMERA) }
+    LaunchedEffect(Unit) { if (!hasCamera) { AppLock.holdOpen(); permission.launch(Manifest.permission.CAMERA) } }
     LaunchedEffect(warning) { if (warning != null) { delay(2600); warning = null } }
 
     Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
@@ -186,10 +200,10 @@ fun ScanInviteScreen(onInvite: (Invite) -> Unit, onClose: () -> Unit) {
 
             // Header
             Column(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 20.dp, vertical = 14.dp)) {
-                Text("SCAN INVITE", fontFamily = Display, fontWeight = FontWeight.Bold, fontSize = 18.sp,
+                Text(title, fontFamily = Display, fontWeight = FontWeight.Bold, fontSize = 18.sp,
                     letterSpacing = 0.1.em, color = ScanCyan)
                 Spacer(Modifier.height(2.dp))
-                Text("QR · NODE CODE + ACCESS KEY + HOST FINGERPRINT", fontFamily = Mono, fontSize = 11.sp,
+                Text(subtitle, fontFamily = Mono, fontSize = 11.sp,
                     letterSpacing = 0.08.em, color = ScanDim)
             }
 
@@ -200,7 +214,7 @@ fun ScanInviteScreen(onInvite: (Invite) -> Unit, onClose: () -> Unit) {
             ) {
                 val w = warning
                 Text(
-                    w ?: if (hasCamera) "ALIGN THE INVITE QR INSIDE THE FRAME" else "OR PICK A SCREENSHOT OF THE INVITE",
+                    w ?: if (hasCamera) hint else "OR PICK A SCREENSHOT OF THE QR CODE",
                     fontFamily = Mono, fontSize = 12.sp, letterSpacing = 0.08.em,
                     color = if (w != null) ScanCrimson else ScanInk, textAlign = TextAlign.Center
                 )
@@ -208,6 +222,7 @@ fun ScanInviteScreen(onInvite: (Invite) -> Unit, onClose: () -> Unit) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     if (hasCamera) ScanButton(if (torch) "LIGHT ON" else "LIGHT", ScanCyan, Modifier.weight(1f)) { torch = !torch }
                     ScanButton("FROM GALLERY", ScanCyan, Modifier.weight(1.4f)) {
+                        AppLock.holdOpen()
                         gallery.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                     }
                     ScanButton("CANCEL", ScanCrimson, Modifier.weight(1f), onClose)

@@ -401,6 +401,15 @@ class LanTransport(context: Context) : Transport {
         if (serviceName.startsWith(prefix)) serviceName.removePrefix(prefix).take(32).takeIf { it.length == 32 } else null
 
     companion object {
+        /** Local IPv4 addresses on WiFi, Ethernet or this phone's own hotspot (e.g. 192.168.1.23). */
+        fun localIPv4(): List<String> = runCatching {
+            java.net.NetworkInterface.getNetworkInterfaces().toList()
+                .filter { it.isUp && !it.isLoopback && !it.isVirtual }
+                .sortedBy { n -> if (n.name.startsWith("wlan") || n.name.startsWith("ap") || n.name.startsWith("swlan")) 0 else 1 }
+                .flatMap { n -> n.inetAddresses.toList().filterIsInstance<Inet4Address>().filter { it.isSiteLocalAddress } }
+                .mapNotNull { it.hostAddress }.distinct()
+        }.getOrDefault(emptyList())
+
         private val resolveLock = Mutex()
         private const val TYPE = "_cybertxts._tcp."
         private const val MAX_FRAME = 25 * 1024 * 1024 // room to grow for media chunks

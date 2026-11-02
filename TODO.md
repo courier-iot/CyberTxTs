@@ -18,6 +18,14 @@
 - [x] Replies, copy, timestamps with CYCLE date dividers
 - [x] **Internet link (first version):** nodes now work across the internet as well as WiFi. Phones find each other through public Nostr relays (they only see encrypted notes under a hash of the node code), then link directly with WebRTC. WiFi is preferred when both phones share it. Operatives list shows VIA WIFI or VIA NET. Settings > LINK > Internet link (on by default; restart to apply).
 - [x] **QR invites + host verification:** INVITE shows a QR code with the node code, access key and the host's fingerprint, plus a SHARE LINK button (cybertxts:// link opens the app). LINK TO NODE > SCAN QR INVITE. Joining from a QR or link pins the host, so nobody else can claim to be host. Operatives list shows ★ HOST · VERIFIED.
+- [x] **Look-alike warning:** a new ID using the callsign of someone you already know shows "⚠ NEW OPERATIVE · NOT THE VEGA YOU KNOW" in the log, Operatives list and Star Map card (with both fingerprints). "I know them" stops the warning.
+- [x] **Full fingerprints:** 32-character fingerprint on every operative card and in Settings, to compare in person.
+- [x] **Move to a new phone:** new phone shows a QR (fresh install > MOVE FROM MY OLD PHONE); old phone scans it (Settings > Backup & devices). Nodes, access keys, contacts, settings and (optionally) the log move over the same WiFi, signed by the old phone. Old phone then offers to erase itself.
+- [x] **Recovery phrase:** 16 words (Settings > Security), shown once, never stored. On a new phone, RECOVER WITH PHRASE proves it's you and can lock the old phone out of every node (removed + key rotated).
+- [x] **Encrypted backup file:** .ctxb file locked with your passphrase (Settings > Backup & devices). Restoring it on a fresh install brings you back as yourself, optionally locking out the old phone.
+- [x] **App lock:** PIN (4-8 digits), optional fingerprint/face, lock delay, privacy screen (hides app switcher, blocks screenshots), escalating wait after 5 wrong PINs, "Forgot PIN?" erase.
+- [x] **Host handover:** host can pass the role (Operatives > HOST, or Star Map card > MAKE HOST). Moving phones carries the host role automatically.
+- [x] **Settings tidied:** home page with your operative card and status chips (lock / recovery / backup), then Security, Backup & devices, Display, Chats & media, Network, Alerts, Danger zone pages. Alerts can hide message text. Danger zone can erase the phone.
 - [x] **Private media:** IMG, VID and VOX now work in private channels. Each item gets its own key sealed to the recipient, goes only to them (or through the one relaying operative), and relays can't open it.
 - [x] **Long-press on pictures:** long-press a photo or video directly for the same menu as text (react, reply, message privately, retract).
 - [x] **Link diagnostics:** ⋮ > LINK DIAGNOSTICS (or DIAGNOSE on the "No link found" banner) shows WiFi status, your address, discovery and relay status, and plain-words fixes. A crimson ROUTER BLOCKING banner appears when operatives are found on WiFi but can't connect (client isolation).
@@ -70,6 +78,20 @@
 - [ ] Remove someone over NET: key rotates; a phone that was offline catches up when it comes back
 - [ ] Settings > Internet link OFF, restart: only WiFi links remain
 - [ ] Note which network combinations fail to link (some mobile carriers and work/school WiFi block direct links)
+
+## Test identity + security round (update ALL phones together)
+- [ ] Look-alike: on a spare phone, pick the SAME callsign as an existing operative and link: everyone sees the ⚠ warning; "I know them" clears it
+- [ ] Settings > Security > Set up recovery phrase: 16 words, screenshot blocked, 3-word check; Test my phrase says MATCHES
+- [ ] Settings > Backup & devices > Export backup: file saves; "Last backup today" shows on the Settings home
+- [ ] Move: fresh install on phone B > MOVE FROM MY OLD PHONE; phone A scans; B gets nodes and log; other operatives see "MOVED TO A NEW DEVICE", keep their nickname for you, private channels continue
+- [ ] Host moves phones: the new phone is host everywhere (★ HOST · VERIFIED)
+- [ ] Restore backup on a fresh install (with "lock out old phone"): old phone is removed from its nodes and the key rotates
+- [ ] Recover with phrase on a fresh install, then rejoin by invite: operatives see "RECOVERED ON A NEW DEVICE · OLD DEVICE LOCKED OUT"; old phone (if on) leaves its nodes
+- [ ] App lock: set PIN, leave the app for longer than the delay: lock screen; fingerprint works; 5 wrong PINs makes it wait; picking a photo doesn't lock you out
+- [ ] Privacy screen: app switcher shows a blank card; screenshots blocked
+- [ ] Alerts > Hide message text: notification says only "New transmission"
+- [ ] Host handover: host taps HOST on someone; everyone sees "HOST ROLE PASSED"; new host can REMOVE
+- [ ] Danger zone > Erase this phone (type ERASE): app closes; reopening starts fresh with a new OP-ID
 
 ## Test this round (update ALL phones together)
 - [ ] Private channel: send IMG, VID and VOX; only the recipient gets them; a third phone shows nothing

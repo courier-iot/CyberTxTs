@@ -104,6 +104,22 @@ class HistoryStore(context: Context) {
 
     @Synchronized fun delete(tag: String) { file(tag).delete() }
 
+    /** The saved log as stored (JSON text), for backups and moving phones. */
+    @Synchronized
+    fun readRaw(tag: String): String? {
+        val f = file(tag)
+        if (!f.exists()) return null
+        return runCatching { enc(f).openFileInput().use { it.readBytes().toString(Charsets.UTF_8) } }.getOrNull()
+    }
+
+    @Synchronized
+    fun writeRaw(tag: String, json: String) {
+        if (tag.isEmpty() || runCatching { JSONArray(json) }.isFailure) return
+        val f = file(tag)
+        f.delete()
+        enc(f).openFileOutput().use { it.write(json.toByteArray()) }
+    }
+
     @Synchronized
     fun deleteAll() {
         ctx.filesDir.listFiles { _, name -> name.startsWith("history_") }?.forEach { it.delete() }

@@ -26,6 +26,8 @@ import kotlinx.coroutines.launch
 /** Is the screen open right now? Used to decide whether to show message notifications. */
 object AppState {
     @Volatile var foreground = false
+    /** App lock is on with "hide message text in alerts": notifications say only that something arrived. */
+    @Volatile var hideAlertText = false
 }
 
 object Notifier {
@@ -81,11 +83,13 @@ object Notifier {
             .setContentTitle("CyberTxTs")
             .setContentText("New message")
             .build()
+        val masked = AppState.hideAlertText
         val n = NotificationCompat.Builder(ctx, CH_MESSAGES)
             .setSmallIcon(R.drawable.ic_stat_node)
-            .setContentTitle(if (unread == 1) "$sender · $node" else "$unread new messages")
-            .setContentText(if (unread == 1) text else "Latest from $sender")
-            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setContentTitle(if (masked) "CyberTxTs" else if (unread == 1) "$sender · $node" else "$unread new messages")
+            .setContentText(if (masked) (if (unread == 1) "New transmission" else "$unread new transmissions")
+                            else if (unread == 1) text else "Latest from $sender")
+            .setStyle(NotificationCompat.BigTextStyle().bigText(if (masked) "Unlock CyberTxTs to read it." else text))
             .setContentIntent(openApp(ctx))
             .setAutoCancel(true)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)   // text hidden on the lock screen

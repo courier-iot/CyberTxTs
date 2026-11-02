@@ -93,7 +93,13 @@ class NodeSession(
     private val onChanged: () -> Unit,              // password or member count changed: manager saves / refreshes
     private val onNotice: (String) -> Unit,
     private val onLeft: (NodeSession) -> Unit,
-    private val viewing: (String) -> Boolean        // is this node the one on screen?
+    private val viewing: (String) -> Boolean,       // is this node the one on screen?
+    /** (recovery public key, my signed commitment to it), if I've set up a recovery phrase. */
+    private val recovery: () -> Pair<String, String>? = { null },
+    /** Certificates saying earlier IDs of mine moved to this phone. Shown to everyone I link with. */
+    private val myChain: () -> List<JSONObject> = { emptyList() },
+    /** Someone showed us a succession certificate: the app checks and applies it across all nodes. */
+    private val onSuccession: (JSONObject) -> Unit = {}
 ) {
     val tag: String = Crypto.roomTag(initial.code)
     private val myEk: ByteArray = ecdh.second
@@ -205,13 +211,16 @@ class NodeSession(
         transport?.stop(); transport = null
         synchronized(voices) { voices.clear() }
         dropAssemblies()
-        prefs.edit().remove("excl_$t").remove("bundles_$t").remove("prev_$t").remove("nick_$t").remove("mute_$t").apply()
+        prefs.edit().remove("excl_$t").remove("bundles_$t").remove("prev_$t").remove("nick_$t").remove("mute_$t").remove("hostcert_$t").remove("hostts_$t").apply()
         scope.launch(Dispatchers.IO) {
             if (eraseHistory || !s.keepHistory) store.delete(t) else store.save(t, snapshot, s.retentionDays)
             if (eraseHistory || !s.keepHistory) vault.delete(t) else vault.prune(t, keepKeys(snapshot, s))
         }
         onLeft(this)
     }
+
+    /** Write the log to disk right now (before a backup or move). */
+    fun saveNow() { if (settings.value.keepHistory) store.save(tag, saveable(), settings.value.retentionDays) }
 
     /** Stop without forgetting anything (app is going away). */
     fun close() {
@@ -249,10 +258,11 @@ class NodeSession(
             val lk = myLinks().entries.sortedBy { it.key }.joinToString(",") { it.key + ":" + it.value }
             val rl = settings.value.relay
             val sig = Identity.sign("hi|$tag|$myId|${r.name}|$host|$ts|$ek|$lk|$rl".toByteArray())
-            transport?.send(JSONObject().put("type", "hi").put("sid", myId).put("n", r.name)
+            val hi = JSONObject().put("type", "hi").put("sid", myId).put("n", r.name)
                 .put("h", host).put("ts", ts).put("ek", ek).put("lk", lk).put("rl", rl)
                 .put("pk", b64(myPub)).put("sig", b64(sig))
-                .toString().toByteArray())
+            recovery()?.let { (rc, rcs) -> hi.put("rc", rc).put("rcs", rcs) }
+            transport?.send(hi.toString().toByteArray())
         }
     }
 
@@ -266,6 +276,8 @@ class NodeSession(
         (before - ids).forEach { linkedSince.remove(it); rtt.remove(it); lastSeen[it] = now }
         connected.value = ids
         peers.value = ids.size
+        val fresh = ids - before
+        if (fresh.isNotEmpty()) scope.launch(Dispatchers.Default) { delay(800); shareCertificates(fresh) }
         if (ids != before) announce()
         onChanged()
     }
@@ -290,6 +302,8 @@ class NodeSession(
                 "typing" -> handleTyping(j)
                 "react" -> handleReact(j)
                 "edit" -> handleEdit(j)
+                "succ" -> j.optJSONObject("c")?.let { c -> if (c.toString().length < 12_000) onSuccession(c) }
+                "hosto" -> handleHostOver(j)
                 "full" -> if (connected.value.isEmpty()) {
                     onNotice("That node is full (${Limits.MAX_ROOM} operatives max).")
                     leave(false)
@@ -359,6 +373,14 @@ class NodeSession(
         people.seen(sid, n)
         known.update { it + (sid to people.alias(sid, n)) }
         if (ek.isNotEmpty()) eks[sid] = Base64.decode(ek, Base64.NO_WRAP)
+        // Their recovery commitment: kept so their recovery phrase can vouch for a future phone of theirs
+        val rc = j.optString("rc"); val rcs = j.optString("rcs")
+        if (rc.length == 64 && rcs.isNotEmpty() && rcs.length < 200) runCatching {
+            val pk = Base64.decode(j.getString("pk"), Base64.NO_WRAP)
+            if (Identity.verify(pk, Succession.rccData(sid, rc), Base64.decode(rcs, Base64.NO_WRAP))) {
+                people.pinRecovery(sid, j.getString("pk"), rc, rcs)
+            }
+        }
         // Host claim: trust the first one we see (see TODO: verify via invite).
         if (h && hostId.value == null && sid != myId) {
             hostId.value = sid
@@ -791,6 +813,91 @@ class NodeSession(
         }
     }
 
+    // ---------- Identity continuity and host handover ----------
+
+    private fun shareCertificates(to: Set<String>) {
+        if (closed) return
+        myChain().forEach { c ->
+            transport?.sendTo(to, JSONObject().put("type", "succ").put("sid", myId).put("c", c).toString().toByteArray())
+        }
+        hostChain().forEach { h -> transport?.sendTo(to, h.toString().toByteArray()) }
+    }
+
+    /**
+     * [old] is now [new] (checked by the app). Carry over private channels and the host role; if the certificate
+     * revokes [old], remove it from this node and rotate the key so the old phone is locked out.
+     */
+    fun applySuccessor(old: String, new: String, revoke: Boolean, cert: JSONObject) {
+        if (closed) return
+        if (old == myId) {
+            if (revoke) {
+                onNotice("Your identity was recovered on another phone, so this phone was locked out of ${displayName()}.")
+                leave(true)
+            }
+            return
+        }
+        val knewThem = old in known.value || messages.value.any { it.senderId == old || it.dm == old } || hostId.value == old
+        if (!knewThem) return
+        messages.update { list -> list.map { if (it.dm == old) it.copy(dm = new) else it } }
+        dmUnread.update { m -> m[old]?.let { n -> (m - old) + (new to (m[new] ?: 0) + n) } ?: m }
+        known.value[old]?.let { n -> known.update { it + (new to (it[new] ?: n)) } }
+        if (hostId.value == old) {
+            hostId.value = new
+            prefs.edit().putString("host_$tag", new).apply()
+        }
+        val who = opTagOf(old)
+        add(Msg("sys-succ-$old-$new", "system", "",
+            if (revoke) "SYS · $who RECOVERED ON A NEW DEVICE · OLD DEVICE LOCKED OUT"
+            else "SYS · $who MOVED TO A NEW DEVICE · NOW ${opTagOf(new)}",
+            System.currentTimeMillis(), system = true))
+        if (revoke) {
+            keepEvidence(old, JSONObject().put("type", "succ").put("target", old).put("c", cert))
+            applyBan(old)
+        }
+    }
+
+    private fun opTagOf(id: String) = people.label(id, known.value[id] ?: "Operative").uppercase() + "//" + id.take(4).uppercase()
+
+    private fun hostChain(): List<JSONObject> = readJsonStrings(prefs.getString("hostcert_$tag", null))
+        .mapNotNull { runCatching { JSONObject(it) }.getOrNull() }
+
+    private fun saveHostCert(j: JSONObject) {
+        val list = (hostChain().map { it.toString() } + j.toString()).takeLast(5)
+        prefs.edit().putString("hostcert_$tag", JSONArray(list).toString()).apply()
+    }
+
+    /** Hand the host role to another linked operative. Everyone checks it came from the current host. */
+    fun handOverHost(to: String) {
+        if (hostId.value != myId || to == myId || isBanned(to)) return
+        scope.launch(Dispatchers.Default) {
+            val ts = System.currentTimeMillis()
+            val sig = Identity.sign("hosto|$tag|$myId|$to|$ts".toByteArray())
+            val j = JSONObject().put("type", "hosto").put("sid", myId).put("to", to).put("ts", ts)
+                .put("pk", b64(myPub)).put("sig", b64(sig))
+            transport?.send(j.toString().toByteArray())
+            acceptHost(j, myId, to)
+        }
+    }
+
+    private fun handleHostOver(j: JSONObject) {
+        val sid = j.getString("sid"); val to = j.getString("to"); val ts = j.getLong("ts")
+        if (sid != hostId.value || to == sid || to.length != 32 || isBanned(to)) return
+        if (ts <= prefs.getLong("hostts_$tag", 0L)) return          // an older handover being replayed
+        if (!verified(j, "hosto|$tag|$sid|$to|$ts")) return
+        acceptHost(j, sid, to)
+    }
+
+    private fun acceptHost(j: JSONObject, from: String, to: String) {
+        hostId.value = to
+        prefs.edit().putString("host_$tag", to).putLong("hostts_$tag", j.getLong("ts")).apply()
+        saveHostCert(j)
+        add(Msg("sys-host-${j.getLong("ts")}", "system", "",
+            "SYS · HOST ROLE PASSED FROM ${opTagOf(from)} TO ${if (to == myId) "YOU" else opTagOf(to)}",
+            System.currentTimeMillis(), system = true))
+        if (to == myId) onNotice("You're now the host of ${displayName()}. You can remove operatives instantly.")
+        announce()
+    }
+
     // ---------- Naming ----------
 
     fun displayName(): String = nickname.value.ifBlank { room.value.code }
@@ -799,7 +906,7 @@ class NodeSession(
     fun route(id: String): String? = (transport as? MultiTransport)?.route(id)
 
     /** True when the host is this phone, or was pinned from a QR / link invite (so can't be spoofed). */
-    val hostVerified: Boolean get() = room.value.created || prefs.getBoolean("hostpin_$tag", false)
+    val hostVerified: Boolean get() = room.value.created || prefs.getBoolean("hostpin_$tag", false) || hostId.value == myId
 
     /** Invite for this node; includes the host's fingerprint when we know who the host is. */
     fun invite(): Invite = Invite(room.value.code, room.value.password, hostId.value)
@@ -1460,6 +1567,7 @@ class NodeSession(
                 "kick" -> if (sid == hostId.value && sid != target && verified(j, "kick|$tag|$target|$ts")) return true
                 "kv" -> if (j.optBoolean("yes") && sid != target && sid in recipients &&
                     verified(j, "kv|$tag|$target|true|$ts")) yes.add(sid)
+                "succ" -> Succession.verify(j.optJSONObject("c"))?.let { l -> if (l.old == target && l.revoke) return true }
             }
         }
         return yes.size >= 2 && yes.size * 2 > recipients.size

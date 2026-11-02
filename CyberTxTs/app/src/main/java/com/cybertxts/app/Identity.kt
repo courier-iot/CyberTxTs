@@ -50,6 +50,9 @@ object Identity {
         gen.generateKeyPair()
     }
 
+    /** Destroy this install's identity key (used when erasing the phone). A new one is made on next launch. */
+    fun destroy() { runCatching { keyStore().deleteEntry(ALIAS) } }
+
     fun publicKeyBytes(): ByteArray {
         ensureKey()
         return keyStore().getCertificate(ALIAS).publicKey.encoded

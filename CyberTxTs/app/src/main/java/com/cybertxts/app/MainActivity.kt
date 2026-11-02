@@ -8,7 +8,8 @@ import android.net.Uri
 import android.os.Build
 import android.provider.OpenableColumns
 import android.os.Bundle
-import androidx.activity.ComponentActivity
+import androidx.fragment.app.FragmentActivity
+import android.view.WindowManager
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -83,7 +84,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val vm = (application as CyberApp).chatVm()   // one brain for the whole app, kept alive by the service
@@ -101,6 +102,14 @@ class MainActivity : ComponentActivity() {
                 Holo.apply(dark)
                 applyBars(dark)
             }
+            // App lock: privacy screen hides the app in the switcher and blocks screenshots
+            val lockOn by AppLock.enabled.collectAsStateWithLifecycle()
+            val privacy by AppLock.privacyScreen.collectAsStateWithLifecycle()
+            val locked by AppLock.locked.collectAsStateWithLifecycle()
+            LaunchedEffect(lockOn, privacy) {
+                if (lockOn && privacy) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                else window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+            }
             HoloTheme {
                 Box(Modifier.fillMaxSize().background(Holo.Backdrop)) {
                     Surface(
@@ -108,7 +117,7 @@ class MainActivity : ComponentActivity() {
                         contentColor = Holo.Ink,
                         modifier = Modifier.fillMaxSize().safeDrawingPadding()
                     ) {
-                        AppRoot(vm)
+                        if (locked) LockScreen(vm) else AppRoot(vm)
                     }
                 }
             }
@@ -129,12 +138,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        AppLock.onReturn()
         AppState.foreground = true
         Notifier.clearMessages(this)
         (application as CyberApp).chatVm().markActiveRead()
     }
 
     override fun onStop() {
+        if (!isChangingConfigurations) AppLock.onLeave()
         AppState.foreground = false
         super.onStop()
     }
@@ -153,7 +164,7 @@ fun AppRoot(vm: ChatViewModel) {
     val nm = name
     val act = active
     when {
-        nm == null -> NameScreen { vm.setProfileName(it) }
+        nm == null -> NameScreen(vm) { vm.setProfileName(it) }
         act == null || showNew -> HomeScreen(vm, nm, canCancel = nodes.isNotEmpty() && act != null) { showNew = false }
         else -> NodeShell(vm, nodes, act) { showNew = true }
     }
@@ -317,116 +328,6 @@ fun SettingsSection(title: String, content: @Composable ColumnScope.() -> Unit) 
     }
 }
 
-/** Full-screen settings, styled as a Stellarite console. */
-@Composable
-fun SettingsDialog(
-    s: AppSettings, onChange: (AppSettings) -> Unit, onErase: () -> Unit, onClose: () -> Unit,
-    alias: String? = null, serial: String? = null
-) {
-    var confirmErase by remember { mutableStateOf(false) }
-    val ctx = LocalContext.current
-    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Column(Modifier.fillMaxSize().background(Holo.Void).safeDrawingPadding()) {
-            Row(
-                Modifier.fillMaxWidth().background(Holo.Panel).padding(start = 4.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconTextButton("‹", "Back", Holo.Primary, onClose)
-                Text("SETTINGS", fontFamily = Display, fontWeight = FontWeight.Bold, fontSize = 16.sp,
-                    letterSpacing = 0.08.em, color = Holo.Primary)
-            }
-            HorizontalDivider(color = Holo.Primary.copy(alpha = 0.35f))
-            Column(
-                Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(20.dp)
-            ) {
-                if (alias != null) {
-                    SettingsSection("OPERATIVE") {
-                        Column(Modifier.fillMaxWidth().openPanel(Holo.Panel, Holo.Muted.copy(alpha = 0.4f)).padding(12.dp)) {
-                            Row(verticalAlignment = Alignment.Bottom) {
-                                Text(alias, fontWeight = FontWeight.Bold, fontSize = 18.sp, modifier = Modifier.weight(1f))
-                                if (serial != null) MonoLabel("OP-ID " + serial.take(4).uppercase() + "·" + serial.drop(4).take(4).uppercase(), Holo.Primary, size = 12)
-                            }
-                            Text("Callsign set at first launch. Permanent for this install.",
-                                style = MaterialTheme.typography.bodySmall, color = Holo.InkDim)
-                        }
-                    }
-                }
-                SettingsSection("DISPLAY") {
-                    ChoiceRow(listOf("dark" to "Night ops", "light" to "Day shift", "system" to "Match device"), s.theme) {
-                        onChange(s.copy(theme = it))
-                    }
-                }
-                SettingsSection("ARCHIVE") {
-                    SettingRow("Save message log", "Encrypted, on this device only.", s.keepHistory) { onChange(s.copy(keepHistory = it)) }
-                    if (s.keepHistory) {
-                        Text("Auto-purge after", style = MaterialTheme.typography.bodySmall, color = Holo.InkDim)
-                        ChoiceRow(listOf("0" to "Never", "7" to "7D", "30" to "30D", "90" to "90D"), s.retentionDays.toString()) {
-                            onChange(s.copy(retentionDays = it.toInt()))
-                        }
-                    }
-                    SettingRow("Keep IMG", "Off: photos are wiped when you unlink or restart.", s.keepImages) { onChange(s.copy(keepImages = it)) }
-                    SettingRow("Keep VID", "Off: videos are wiped when you unlink or restart.", s.keepVideos) { onChange(s.copy(keepVideos = it)) }
-                    Text("VOX notes are never stored. They vanish when you unlink.",
-                        style = MaterialTheme.typography.bodySmall, color = Holo.InkDim)
-                }
-                SettingsSection("TRANSMISSION QUALITY") {
-                    ChoiceRow(Quality.presets.map { it.key to it.label }, s.quality) { onChange(s.copy(quality = it)) }
-                    SettingRow("Ask before each IMG / VID", "Pick quality (or Original for photos) every time.", s.askQuality) {
-                        onChange(s.copy(askQuality = it))
-                    }
-                }
-                SettingsSection("LINK") {
-                    SettingRow(
-                        "Internet link",
-                        "Reach operatives anywhere, not just on your WiFi. Content stays end-to-end encrypted; " +
-                            "linked operatives can see your IP address.",
-                        s.internet
-                    ) { onChange(s.copy(internet = it)) }
-                    SettingRow(
-                        "Relay for other operatives",
-                        "If two operatives can't link directly, your phone forwards their encrypted traffic. " +
-                            "Uses some of your data and battery.",
-                        s.relay
-                    ) { onChange(s.copy(relay = it)) }
-                    SettingRow("Hold link in background", "Stays connected with the screen off. Uses more battery.", s.keepAlive) {
-                        onChange(s.copy(keepAlive = it))
-                    }
-                    if (s.keepAlive) {
-                        GhostButton("Battery: set CyberTxTs to unrestricted", Modifier.fillMaxWidth()) {
-                            runCatching { ctx.startActivity(Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
-                        }
-                    }
-                    GhostButton("Alert tone · comm chirp", Modifier.fillMaxWidth(), color = Holo.Primary) {
-                        runCatching {
-                            ctx.startActivity(
-                                Intent(android.provider.Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
-                                    .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, ctx.packageName)
-                                    .putExtra(android.provider.Settings.EXTRA_CHANNEL_ID, Notifier.CH_MESSAGES)
-                            )
-                        }
-                    }
-                }
-                SettingsSection("DANGER ZONE") {
-                    GhostButton("Purge all saved logs", Modifier.fillMaxWidth(), color = Holo.Danger) { confirmErase = true }
-                }
-                // Room to scroll the last item clear of Android's navigation bar
-                Spacer(Modifier.navigationBarsPadding().height(96.dp))
-            }
-        }
-    }
-    if (confirmErase) {
-        AlertDialog(
-            onDismissRequest = { confirmErase = false },
-            shape = cutShape(14.dp), containerColor = Holo.Panel, titleContentColor = Holo.Primary, textContentColor = Holo.Ink,
-            title = { Text("Purge everything?") },
-            text = { Text("All saved message logs on this device will be deleted. This can't be undone.") },
-            confirmButton = { TextButton(onClick = { confirmErase = false; onErase() }) { Text("PURGE", fontFamily = Mono, color = Holo.Danger) } },
-            dismissButton = { TextButton(onClick = { confirmErase = false }) { Text("CANCEL", fontFamily = Mono, color = Holo.Primary) } }
-        )
-    }
-}
-
 /** A 44dp text glyph button (menu, back, close) with an accessibility label. */
 @Composable
 fun IconTextButton(glyph: String, description: String, color: Color, onClick: () -> Unit) {
@@ -438,9 +339,7 @@ fun IconTextButton(glyph: String, description: String, color: Color, onClick: ()
 
 @Composable
 fun SettingsHost(vm: ChatViewModel, onClose: () -> Unit) {
-    val s by vm.settings.collectAsStateWithLifecycle()
-    val alias by vm.profileName.collectAsStateWithLifecycle()
-    SettingsDialog(s, { vm.updateSettings(it) }, { vm.eraseAllHistory() }, onClose, alias, vm.myId)
+    SettingsScreen(vm, onClose)
 }
 
 fun buildMembers(
@@ -456,7 +355,7 @@ fun buildMembers(
 // ---------- First launch: choose a callsign ----------
 
 @Composable
-fun NameScreen(onDone: (String) -> Unit) {
+fun NameScreen(vm: ChatViewModel, onDone: (String) -> Unit) {
     var name by remember { mutableStateOf("") }
     Box(Modifier.fillMaxSize()) {
         Starfield(Modifier.fillMaxSize())
@@ -476,10 +375,12 @@ fun NameScreen(onDone: (String) -> Unit) {
             OutlinedTextField(name, { name = it.take(24) }, label = { Text("Callsign") }, singleLine = true,
                 shape = CutCornerShape(topStart = 10.dp), colors = holoFieldColors(), modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(6.dp))
-            Text("Permanent for this install. Choose carefully.", style = MaterialTheme.typography.bodySmall,
+            Text("Permanent for this phone. If you're new to CyberTxTs, pick one below.", style = MaterialTheme.typography.bodySmall,
                 color = Holo.InkDim, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(18.dp))
             HoloButton("Confirm callsign", enabled = name.isNotBlank(), modifier = Modifier.fillMaxWidth()) { onDone(name.trim()) }
+            Spacer(Modifier.height(28.dp))
+            ReturningOptions(vm)
         }
     }
 }
@@ -738,6 +639,7 @@ fun MembersDialog(
     var nickTarget by remember { mutableStateOf<Member?>(null) }
     var kickTarget by remember { mutableStateOf<Member?>(null) }
     var voteTarget by remember { mutableStateOf<Member?>(null) }
+    var hostTarget by remember { mutableStateOf<Member?>(null) }
 
     AlertDialog(
         onDismissRequest = onClose,
@@ -765,6 +667,9 @@ fun MembersDialog(
                             )
                             MonoLabel(opTag(m.name, m.id) + (if (nick != null) " · CALLSIGN" else "") +
                                 (if (m.isMe) "" else vm.route(m.id)?.let { " · VIA $it" } ?: ""), Holo.Primary)
+                            if (!m.isMe && vm.people.lookalikeOf(m.id) != null) {
+                                MonoLabel("\u26A0 NEW ID · SAME CALLSIGN AS SOMEONE YOU KNOW", Holo.Danger, size = 10)
+                            }
                             val v = votes[m.id]
                             if (v != null) {
                                 Text("REMOVAL VOTE · ${v.yes.size} YES · ${v.no.size} NO", fontFamily = Mono,
@@ -774,6 +679,7 @@ fun MembersDialog(
                         if (!m.isMe) {
                             TextButton(onClick = { nickTarget = m }) { Text("NICK", fontFamily = Mono, color = Holo.Primary) }
                             if (iAmHost) {
+                                TextButton(onClick = { hostTarget = m }) { Text("HOST", fontFamily = Mono, color = Gold) }
                                 TextButton(onClick = { kickTarget = m }) { Text("REMOVE", fontFamily = Mono, color = Holo.Danger) }
                             } else if (!m.isHost) {
                                 TextButton(onClick = { voteTarget = m }) { Text("VOTE OUT", fontFamily = Mono, color = Holo.Danger) }
@@ -803,6 +709,8 @@ fun MembersDialog(
             dismissButton = { TextButton(onClick = { kickTarget = null }) { Text("Cancel", color = Holo.Primary) } }
         )
     }
+    val ht = hostTarget
+    if (ht != null) MakeHostDialog(vm, ht.id, ht.name) { hostTarget = null }
     val vt = voteTarget
     if (vt != null) {
         AlertDialog(
@@ -814,6 +722,22 @@ fun MembersDialog(
             dismissButton = { TextButton(onClick = { voteTarget = null }) { Text("Cancel", color = Holo.Primary) } }
         )
     }
+}
+
+/** Confirm handing the host role to someone else. */
+@Composable
+fun MakeHostDialog(vm: NodeSession, id: String, name: String, onClose: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onClose,
+        shape = cutShape(14.dp), containerColor = Holo.Panel, titleContentColor = Holo.Primary, textContentColor = Holo.Ink,
+        title = { Text("Make $name the host?") },
+        text = {
+            Text("They'll be able to remove operatives instantly, and you won't. Everyone checks this came from you. " +
+                "Fingerprint: ${fingerprint(id)}")
+        },
+        confirmButton = { TextButton(onClick = { vm.handOverHost(id); onClose() }) { Text("HAND OVER", fontFamily = Mono, color = Gold) } },
+        dismissButton = { TextButton(onClick = onClose) { Text("CANCEL", fontFamily = Mono, color = Holo.Primary) } }
+    )
 }
 
 // ---------- Chat (one node) ----------
@@ -869,6 +793,14 @@ fun ChatScreen(
     var menuFor by remember { mutableStateOf<String?>(null) }        // message whose long-press menu is open
     var nickFor by remember { mutableStateOf<Pair<String, String>?>(null) }   // (person id, alias)
     val nicks by vm.people.nicknames.collectAsStateWithLifecycle()
+    val aliasMap by vm.people.aliases.collectAsStateWithLifecycle()
+    val succMap by vm.people.successors.collectAsStateWithLifecycle()
+    val vouchSet by vm.people.vouched.collectAsStateWithLifecycle()
+    // Senders using the callsign of someone you met earlier (and who aren't them on a new phone)
+    val lookalikes = remember(aliasMap, succMap, vouchSet, allMessages.size) {
+        allMessages.asSequence().map { it.senderId }.distinct().filter { it != vm.myId && it != "system" }
+            .mapNotNull { id -> vm.people.lookalikeOf(id)?.let { id to it } }.toMap()
+    }
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
     val ctx = LocalContext.current
@@ -1175,6 +1107,7 @@ fun ChatScreen(
                 } else {
                     val mine = m.senderId == vm.myId
                     val label = if (mine) "YOU//" + vm.myId.take(4).uppercase() else opTag(nicks[m.senderId] ?: m.senderName, m.senderId)
+                    val twin = if (mine) null else lookalikes[m.senderId]
                     val kind = when {
                         m.image != null -> " · IMG"
                         m.video != null -> " · VID ${fmtDur(m.durMs)}"
@@ -1198,6 +1131,9 @@ fun ChatScreen(
                             align = if (mine) TextAlign.End else TextAlign.Start)
                         if (!mine && nicks[m.senderId] != null) {
                             MonoLabel("CALLSIGN " + m.senderName.uppercase(), Holo.InkDim, size = 10)
+                        }
+                        if (twin != null) {
+                            MonoLabel("\u26A0 NEW OPERATIVE · NOT THE ${(nicks[twin] ?: m.senderName).uppercase()} YOU KNOW", Holo.Danger, size = 10)
                         }
                         Spacer(Modifier.height(4.dp))
                         Box {
@@ -1356,12 +1292,13 @@ fun ChatScreen(
                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 GhostButton("IMG", Modifier.width(48.dp), description = if (dmPeer != null) "Send photo or video privately" else "Send photo or video") {
+                    AppLock.holdOpen()
                     photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
                 }
                 GhostButton("VOX", Modifier.width(48.dp), description = if (dmPeer != null) "Record private voice note" else "Record voice note") {
                     if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                         startRecording()
-                    } else micPermission.launch(Manifest.permission.RECORD_AUDIO)
+                    } else { AppLock.holdOpen(); micPermission.launch(Manifest.permission.RECORD_AUDIO) }
                 }
                 OutlinedTextField(
                     input, { input = it; if (it.isNotBlank()) vm.typingNow(dmPeer) },

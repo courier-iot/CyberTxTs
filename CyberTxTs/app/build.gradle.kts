@@ -67,4 +67,8 @@ dependencies {
     // Both open source and fully offline: no Google Play Services needed.
     implementation("com.google.zxing:core:3.5.3")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0") { isTransitive = false }
+
+    // App lock: fingerprint / face unlock (AndroidX, works offline, no Google Play Services)
+    implementation("androidx.biometric:biometric:1.1.0")
+    implementation("androidx.fragment:fragment-ktx:1.8.5")
 }

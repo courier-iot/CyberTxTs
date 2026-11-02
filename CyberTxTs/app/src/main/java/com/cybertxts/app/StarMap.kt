@@ -67,7 +67,7 @@ import kotlin.math.sin
 import kotlinx.coroutines.delay
 
 private val Amber = Color(0xFFFFB020)
-private val Gold = Color(0xFFFFD166)
+val Gold = Color(0xFFFFD166)
 
 fun agoText(ms: Long): String {
     val s = (ms / 1000).coerceAtLeast(0)
@@ -299,7 +299,10 @@ fun OperativeCard(
     val nicks by vm.people.nicknames.collectAsStateWithLifecycle()
     var showNick by remember { mutableStateOf(false) }
     var confirm by remember { mutableStateOf(false) }
+    var makeHost by remember { mutableStateOf(false) }
     val alias = vm.people.alias(p.id, p.name)
+    val vouched by vm.people.vouched.collectAsStateWithLifecycle()
+    val twin = remember(p.id, vouched) { vm.people.lookalikeOf(p.id) }
     val now = System.currentTimeMillis()
     val tint = if (p.route == "NET") Holo.Accent else Holo.Primary
 
@@ -327,6 +330,8 @@ fun OperativeCard(
         )
     }
 
+    if (makeHost) MakeHostDialog(vm, p.id, p.name) { makeHost = false; onClose() }
+
     Column(
         modifier.fillMaxWidth().openPanel(Holo.Panel, tint.copy(alpha = 0.8f), cut = 20.dp).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -341,10 +346,25 @@ fun OperativeCard(
                     Text(p.name, fontWeight = FontWeight.Bold, fontSize = 20.sp)
                     if (p.host) { Spacer(Modifier.width(8.dp)); MonoLabel("★ HOST", Gold) }
                 }
-                MonoLabel(opTag(alias, p.id) + " · OP-ID " + p.id.take(4).uppercase() + "·" + p.id.drop(4).take(4).uppercase(), tint)
+                MonoLabel(opTag(alias, p.id), tint)
                 if (nicks[p.id] != null) Text("Callsign: $alias", style = MaterialTheme.typography.bodySmall, color = Holo.InkDim)
             }
             IconTextButton("✕", "Close", Holo.Muted, onClose)
+        }
+        Column {
+            MonoLabel("FINGERPRINT · COMPARE IN PERSON TO BE SURE", Holo.InkDim, size = 10)
+            Text(fingerprint(p.id), fontFamily = Mono, fontSize = 13.sp, color = Holo.Ink)
+        }
+        if (twin != null) {
+            Column(Modifier.fillMaxWidth().openPanel(Holo.Panel, Holo.Danger.copy(alpha = 0.8f)).padding(10.dp)) {
+                MonoLabel("\u26A0 NOT THE ${(nicks[twin] ?: alias).uppercase()} YOU KNOW", Holo.Danger, size = 12)
+                Spacer(Modifier.height(4.dp))
+                Text("Same callsign, different identity. The one you met earlier is ${fingerprint(twin).take(9)}…; this is ${fingerprint(p.id).take(9)}…. " +
+                    "If they moved phones properly, CyberTxTs would have recognised them.",
+                    style = MaterialTheme.typography.bodySmall, color = Holo.Ink)
+                Spacer(Modifier.height(6.dp))
+                GhostButton("I know them · stop warning", color = Holo.Muted, height = 36) { vm.people.vouch(p.id) }
+            }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             StatBox("ROUTE", when {
@@ -371,6 +391,7 @@ fun OperativeCard(
             if (iAmHost) GhostButton("Remove", Modifier.weight(1f), color = Holo.Danger) { confirm = true }
             else if (!p.host) GhostButton("Vote out", Modifier.weight(1f), color = Holo.Danger) { confirm = true }
         }
+        if (iAmHost && p.linked) GhostButton("Make host", Modifier.fillMaxWidth(), color = Gold) { makeHost = true }
     }
 }
 

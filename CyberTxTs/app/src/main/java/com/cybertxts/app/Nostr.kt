@@ -108,8 +108,47 @@ object Schnorr {
         return b32(r.x) + b32(k.add(e.multiply(d)).mod(N))
     }
 
+    /** x-only public key (32 bytes) for a secret key. */
+    fun pubOf(sk: ByteArray): ByteArray = b32(mul(G, int(sk))!!.x)
+
+    /** A valid secret key derived from a seed (used for the recovery phrase). Same seed, same key. */
+    fun keyFromSeed(seed: ByteArray, label: String): ByteArray {
+        var i = 0
+        while (true) {
+            val sk = sha256(label.toByteArray(), seed, byteArrayOf(i.toByte()))
+            val d = int(sk)
+            if (d.signum() != 0 && d < N) return sk
+            i++
+        }
+    }
+
+    private fun liftX(x: BigInteger): Pt? {
+        if (x >= P) return null
+        val c = x.modPow(THREE, P).add(BigInteger.valueOf(7)).mod(P)
+        val y = c.modPow(P.add(BigInteger.ONE).shiftRight(2), P)
+        if (y.modPow(TWO, P) != c) return null
+        return Pt(x, if (isEven(y)) y else P.subtract(y))
+    }
+
+    /** BIP-340 verification: is [sig] a valid signature of [msg] by x-only public key [pub]? */
+    fun verify(pub: ByteArray, msg: ByteArray, sig: ByteArray): Boolean = try {
+        if (pub.size != 32 || sig.size != 64) false else {
+            val pt = liftX(int(pub))
+            val r = int(sig.copyOfRange(0, 32)); val s = int(sig.copyOfRange(32, 64))
+            if (pt == null || r >= P || s >= N) false else {
+                val e = int(tagged("BIP0340/challenge", sig.copyOfRange(0, 32), pub, msg)).mod(N)
+                val rr = add(mul(G, s), mul(pt, N.subtract(e)))
+                rr != null && isEven(rr.y) && rr.x == r
+            }
+        }
+    } catch (e: Exception) { false }
+
     fun hex(b: ByteArray): String = b.joinToString("") { "%02x".format(it) }
+    fun unhex(s: String): ByteArray? =
+        if (s.length % 2 != 0 || !s.all { it in "0123456789abcdefABCDEF" }) null
+        else ByteArray(s.length / 2) { s.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
     fun sha256Hex(s: String): String = hex(sha256(s.toByteArray()))
+    fun sha256Bytes(b: ByteArray): ByteArray = sha256(b)
 }
 
 /**
