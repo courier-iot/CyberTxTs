@@ -221,7 +221,9 @@ fun SettingsScreen(vm: ChatViewModel, onClose: () -> Unit) {
         NavRow("BATTERY & DATA", usage?.let { usageSummary(it) } ?: "Reading…") { page = "usage" }
         NavRow("ALERTS", "Comm chirp" + if (AppLock.hideAlerts.collectAsStateWithLifecycle().value) " · text hidden" else "") { page = "alerts" }
         NavRow("DANGER ZONE", "Purge logs · erase this phone", Holo.Danger) { page = "danger" }
-        MonoLabel("CYBERTXTS · BY STELLARITE", Holo.InkDim, size = 10, align = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+        val appCtx = LocalContext.current
+        val version = remember { runCatching { appCtx.packageManager.getPackageInfo(appCtx.packageName, 0).versionName }.getOrNull() ?: "" }
+        MonoLabel("CYBERTXTS $version · BY STELLARITE".replace("  ", " "), Holo.InkDim, size = 10, align = TextAlign.Center, modifier = Modifier.fillMaxWidth())
     }
 
     when (page) {

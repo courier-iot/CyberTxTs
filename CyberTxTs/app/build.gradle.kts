@@ -6,8 +6,13 @@ plugins {
 
 // Set by the GitHub build when the SIGNING_KEYSTORE secret exists
 val keystorePath: String? = System.getenv("SIGNING_KEYSTORE_PATH")
-// Each GitHub build gets a higher version number, so phones see it as an update
+// Each GitHub test build gets a higher version number, so phones see it as an update
 val buildNumber: Int = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
+// Set by the Release workflow, like "1.0.0". Releases get version codes far above any test build
+// (1.0.0 -> 1000000), so a release installs as an update over an old test build and keeps its data.
+val releaseVersion: String? = System.getenv("RELEASE_VERSION")?.removePrefix("v")
+    ?.takeIf { Regex("""\d{1,3}\.\d{1,2}\.\d{1,2}""").matches(it) }
+fun versionCodeOf(v: String): Int = v.split(".").map { it.toInt() }.let { (a, b, c) -> a * 1_000_000 + b * 10_000 + c * 100 }
 
 android {
     namespace = "com.cybertxts.app"
@@ -16,8 +21,9 @@ android {
         applicationId = "com.cybertxts.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = buildNumber
-        versionName = "0.1.$buildNumber"
+        versionCode = releaseVersion?.let(::versionCodeOf) ?: buildNumber
+        versionName = releaseVersion ?: "0.1.$buildNumber"
+        manifestPlaceholders["appLabel"] = "CyberTxTs"
     }
     signingConfigs {
         create("stellarite") {
@@ -31,9 +37,27 @@ android {
         }
     }
     buildTypes {
+        // Test builds: a separate app ("CyberTxTs Dev") so they sit next to the real release
+        // instead of fighting it over version numbers. Separate app = separate identity and chats.
         getByName("debug") {
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-dev"
+            manifestPlaceholders["appLabel"] = "CyberTxTs Dev"
             if (keystorePath != null) signingConfig = signingConfigs.getByName("stellarite")
         }
+        // Releases: always signed with the permanent key (the Release workflow refuses to run without it).
+        // Code shrinking stays off for now: WebRTC, ZXing and OkHttp need hand-tuned keep rules,
+        // and an over-shrunk build breaks calls or scanning in ways only a real phone shows.
+        getByName("release") {
+            isMinifyEnabled = false
+            isShrinkResources = false
+            if (keystorePath != null) signingConfig = signingConfigs.getByName("stellarite")
+        }
+    }
+    // No Google-encrypted dependency report baked into the APK (F-Droid rejects it, and nobody else reads it)
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
     }
     buildFeatures { compose = true }
     compileOptions {
