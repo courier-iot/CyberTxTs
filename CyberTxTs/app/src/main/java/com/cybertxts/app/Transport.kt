@@ -26,6 +26,8 @@ interface Transport {
     fun send(frame: ByteArray)
     /** Send right now on the calling thread (use off the main thread). Keeps order on each link. */
     fun sendBlocking(frame: ByteArray)
+    /** Send only to these directly linked peers (used for relaying and delay pings). */
+    fun sendTo(ids: Set<String>, frame: ByteArray)
     /** Switch to a new room key. Existing links stay up; the previous key is honoured briefly. */
     fun rekey(kid: String, key: SecretKey)
     /** Remember an older key so members who missed a key change can be brought up to date. */

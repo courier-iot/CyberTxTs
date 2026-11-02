@@ -169,8 +169,9 @@ class NodeSession(
 
         bgJob = scope.launch(Dispatchers.Default) {
             while (isActive) {
-                delay(30_000)
+                delay(20_000)
                 announce()
+                sendPing()
                 purgeVotes()
                 sweepTransfers()
                 val pending = synchronized(banned) {
@@ -231,9 +232,12 @@ class NodeSession(
             val ts = System.currentTimeMillis()
             val host = hostId.value == myId
             val ek = b64(myEk)
-            val sig = Identity.sign("hi|$tag|$myId|${r.name}|$host|$ts|$ek".toByteArray())
+            val lk = myLinks().entries.sortedBy { it.key }.joinToString(",") { it.key + ":" + it.value }
+            val rl = settings.value.relay
+            val sig = Identity.sign("hi|$tag|$myId|${r.name}|$host|$ts|$ek|$lk|$rl".toByteArray())
             transport?.send(JSONObject().put("type", "hi").put("sid", myId).put("n", r.name)
-                .put("h", host).put("ts", ts).put("ek", ek).put("pk", b64(myPub)).put("sig", b64(sig))
+                .put("h", host).put("ts", ts).put("ek", ek).put("lk", lk).put("rl", rl)
+                .put("pk", b64(myPub)).put("sig", b64(sig))
                 .toString().toByteArray())
         }
     }
@@ -244,10 +248,11 @@ class NodeSession(
         if (closed) return
         val before = connected.value
         val now = System.currentTimeMillis()
-        ids.forEach { seenAt.putIfAbsent(it, now) }
+        ids.forEach { seenAt.putIfAbsent(it, now); lastSeen[it] = now; linkedSince.putIfAbsent(it, now) }
+        (before - ids).forEach { linkedSince.remove(it); rtt.remove(it); lastSeen[it] = now }
         connected.value = ids
         peers.value = ids.size
-        if (ids.any { it !in before }) announce()
+        if (ids != before) announce()
         onChanged()
     }
 
@@ -255,7 +260,17 @@ class NodeSession(
         if (closed) return
         try {
             val j = JSONObject(bytes.toString(Charsets.UTF_8))
-            when (j.getString("type")) {
+            val type = j.getString("type")
+            rxBytes.addAndGet(bytes.size.toLong())
+            val origin = when (type) {
+                "mc" -> mediaOrigin[j.optString("id")]
+                "ping", "pong", "full" -> null
+                else -> j.optString("sid").takeIf { it.length == 32 }
+            }
+            if (origin != null && origin != myId) noteSeen(origin, bytes.size)
+            when (type) {
+                "ping" -> handlePing(j)
+                "pong" -> handlePong(j)
                 "full" -> if (connected.value.isEmpty()) {
                     onNotice("That node is full (${Limits.MAX_ROOM} operatives max).")
                     leave(false)
@@ -268,6 +283,7 @@ class NodeSession(
                 "kv" -> handleVote(j)
                 "rekey" -> scope.launch(Dispatchers.Default) { acceptBundle(j) }
             }
+            if (origin != null) maybeRelay(origin, bytes)
         } catch (_: Exception) {}
     }
 
@@ -303,7 +319,18 @@ class NodeSession(
         if (isBanned(sid)) return
         val n = j.getString("n"); val h = j.getBoolean("h"); val ts = j.getLong("ts")
         val ek = j.optString("ek")
-        if (!verified(j, "hi|$tag|$sid|$n|$h|$ts|$ek")) return
+        val lk = j.optString("lk")
+        val rl = j.optBoolean("rl", false)
+        if (lk.length > 2_000) return
+        if (!verified(j, "hi|$tag|$sid|$n|$h|$ts|$ek|$lk|$rl")) return
+        if (Math.abs(System.currentTimeMillis() - ts) < REPORT_TTL) {
+            val links = lk.split(",").mapNotNull { e ->
+                val p = e.split(":")
+                if (p.size == 2 && p[0].length == 32 && (p[1] == "WIFI" || p[1] == "NET")) p[0] to p[1] else null
+            }.toMap()
+            reports[sid] = Report(links, rl, System.currentTimeMillis())
+            seenAt.putIfAbsent(sid, System.currentTimeMillis())
+        }
         people.seen(sid, n)
         known.update { it + (sid to people.alias(sid, n)) }
         if (ek.isNotEmpty()) eks[sid] = Base64.decode(ek, Base64.NO_WRAP)
@@ -313,6 +340,145 @@ class NodeSession(
             prefs.edit().putString("host_$tag", sid).apply()
         }
     }
+
+    // ---------- Star map: link reports, delay, activity ----------
+    //
+    // Every operative's signed "hi" now carries its list of direct links (id:WIFI/NET) and whether it relays.
+    // From those reports each phone can draw the whole mesh, spot pairs that can't link directly, and pick
+    // exactly one operative to forward frames between them.
+
+    private class Report(val links: Map<String, String>, val relay: Boolean, val at: Long)
+
+    data class MapPeer(
+        val id: String, val name: String, val route: String?, val linked: Boolean, val viaRelay: String?,
+        val lastSeen: Long, val rttMs: Long?, val since: Long?, val rx: Long, val active: Boolean, val host: Boolean
+    )
+    /** route == null means the two have no direct link; relayVia names who forwards between them (if anyone). */
+    data class MeshEdge(val a: String, val b: String, val route: String?, val relayVia: String?)
+    data class MapSnapshot(val peers: List<MapPeer>, val edges: List<MeshEdge>, val tx: Long, val rx: Long, val relays: Int)
+
+    private val reports = ConcurrentHashMap<String, Report>()
+    private val linkedSince = ConcurrentHashMap<String, Long>()
+    private val lastSeen = ConcurrentHashMap<String, Long>()
+    private val lastActive = ConcurrentHashMap<String, Long>()
+    private val rtt = ConcurrentHashMap<String, Long>()
+    private val rxFrom = ConcurrentHashMap<String, Long>()
+    private val rxBytes = java.util.concurrent.atomic.AtomicLong()
+    private val mediaOrigin = ConcurrentHashMap<String, String>()
+    private val relayed = object : LinkedHashMap<String, Boolean>(256, 0.75f, false) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>?) = size > 4000
+    }
+
+    private fun fresh(r: Report?) = r != null && System.currentTimeMillis() - r.at < REPORT_TTL
+
+    /** Everyone reachable right now: direct links plus operatives others report as linked (reached via a relay). */
+    fun reachable(): Set<String> {
+        val banSnap = synchronized(banned) { HashSet(banned) }
+        val out = HashSet(connected.value)
+        reports.forEach { (id, r) -> if (fresh(r)) out.add(id) }
+        return out - banSnap - myId
+    }
+
+    private fun myLinks(): Map<String, String> = connected.value.associateWith { route(it) ?: "WIFI" }
+
+    /** true / false if we know whether a and b are directly linked, null if nobody has reported on them. */
+    private fun linkedPair(a: String, b: String): Boolean? {
+        if (a == myId) return b in connected.value
+        if (b == myId) return a in connected.value
+        val ra = reports[a]?.takeIf { fresh(it) }
+        val rb = reports[b]?.takeIf { fresh(it) }
+        if (ra == null && rb == null) return null
+        return (ra?.links?.containsKey(b) == true) || (rb?.links?.containsKey(a) == true)
+    }
+
+    private fun relays(id: String) = if (id == myId) settings.value.relay else reports[id]?.relay == true
+
+    /** The single operative who forwards between a and b: smallest ID that relays and is linked to both. */
+    private fun chosenRelay(a: String, b: String): String? =
+        (reachable() + myId).filter {
+            it != a && it != b && relays(it) && linkedPair(it, a) == true && linkedPair(it, b) == true
+        }.minOrNull()
+
+    /** Forward a frame from [origin] to my direct links that can't reach origin themselves (one hop). */
+    private fun maybeRelay(origin: String, bytes: ByteArray) {
+        if (!settings.value.relay || origin == myId) return
+        val targets = connected.value.filter { p ->
+            p != origin && linkedPair(p, origin) == false && chosenRelay(origin, p) == myId
+        }.toSet()
+        if (targets.isEmpty()) return
+        val key = Crypto.sha256Hex(bytes)
+        synchronized(relayed) {
+            if (relayed.containsKey(key)) return
+            relayed[key] = true
+        }
+        transport?.sendTo(targets, bytes)
+    }
+
+    private fun noteSeen(sid: String, size: Int) {
+        val now = System.currentTimeMillis()
+        lastSeen[sid] = now
+        lastActive[sid] = now
+        rxFrom.merge(sid, size.toLong()) { a, b -> a + b }
+    }
+
+    private fun sendPing() {
+        transport?.send(JSONObject().put("type", "ping").put("sid", myId)
+            .put("ts", System.currentTimeMillis()).toString().toByteArray())
+    }
+
+    private fun handlePing(j: JSONObject) {
+        val sid = j.optString("sid")
+        if (sid == myId || sid !in connected.value) return
+        transport?.sendTo(setOf(sid), JSONObject().put("type", "pong").put("sid", myId).put("to", sid)
+            .put("ts", j.optLong("ts")).toString().toByteArray())
+    }
+
+    private fun handlePong(j: JSONObject) {
+        if (j.optString("to") != myId) return
+        val d = System.currentTimeMillis() - j.optLong("ts")
+        if (d in 0..60_000) rtt[j.optString("sid")] = d
+    }
+
+    fun mapSnapshot(): MapSnapshot {
+        val now = System.currentTimeMillis()
+        val conn = connected.value
+        val reach = reachable()
+        val names = known.value
+        val host = hostId.value
+        val banSnap = synchronized(banned) { HashSet(banned) }
+        val ids = (conn + reach + lastSeen.filter { now - it.value < SEEN_TTL }.keys) - myId - banSnap
+        val list = ids.map { id ->
+            val direct = id in conn
+            MapPeer(
+                id = id, name = people.label(id, names[id] ?: "Unknown"),
+                route = if (direct) route(id) else null, linked = direct || id in reach,
+                viaRelay = if (!direct && id in reach) chosenRelay(id, myId) else null,
+                lastSeen = lastSeen[id] ?: 0L, rttMs = if (direct) rtt[id] else null, since = linkedSince[id],
+                rx = rxFrom[id] ?: 0L, active = now - (lastActive[id] ?: 0L) < 2_500, host = id == host
+            )
+        }.sortedBy { it.name.lowercase() }
+        val online = (reach + myId).sorted()
+        val edges = ArrayList<MeshEdge>()
+        for (i in online.indices) for (k in i + 1 until online.size) {
+            val a = online[i]; val b = online[k]
+            val lp = linkedPair(a, b) ?: continue
+            if (lp) {
+                val r = when {
+                    a == myId -> route(b)
+                    b == myId -> route(a)
+                    else -> reports[a]?.links?.get(b) ?: reports[b]?.links?.get(a)
+                }
+                edges.add(MeshEdge(a, b, r ?: "NET", null))
+            } else {
+                edges.add(MeshEdge(a, b, null, chosenRelay(a, b)))
+            }
+        }
+        val mt = transport as? MultiTransport
+        return MapSnapshot(list, edges, mt?.txBytes() ?: 0L, rxBytes.get(), relayCount())
+    }
+
+    /** Operative IDs this node knows about (for the constellation view). */
+    fun memberIds(): Set<String> = (known.value.keys + reachable()) - myId - synchronized(banned) { HashSet(banned) }
 
     // ---------- Naming ----------
 
@@ -573,6 +739,7 @@ class NodeSession(
         val hashes = (0 until chunks).map { arr.getString(it) }
         val listHash = Crypto.sha256Hex(hashes.joinToString(",").toByteArray())
         if (!verified(j, "media|$tag|$id|$sid|$ts|$kind|$size|$chunks|$listHash|$w|$h|$dur|$th")) return
+        mediaOrigin[id] = sid
         if (synchronized(seen) { seen.contains(id) }) return
 
         // Video preview picture, checked against the signed fingerprint
@@ -731,7 +898,7 @@ class NodeSession(
         val yes = j.getBoolean("yes"); val ts = j.getLong("ts")
         if (isBanned(voter) || voter == target || target == hostId.value) return
         if (abs(System.currentTimeMillis() - ts) > VOTE_FRESH_MS) return
-        if (voter !in connected.value) return
+        if (voter !in reachable()) return
         if (!verified(j, "kv|$tag|$target|$yes|$ts")) return
         if (yes) keepEvidence(target, j)
         recordVote(voter, target, yes)
@@ -750,7 +917,7 @@ class NodeSession(
     /** Passes when at least 2 members vote yes AND yes is a strict majority of everyone except the target. */
     private fun evaluate(target: String) {
         val v = votes.value[target] ?: return
-        val eligible = (connected.value + myId) - target
+        val eligible = (reachable() + myId) - target
         val yes = v.yes.count { it in eligible }
         if (yes >= 2 && yes * 2 > eligible.size) applyBan(target)
     }
@@ -789,7 +956,7 @@ class NodeSession(
 
     private fun leaderOrder(): List<String> {
         val banSnap = synchronized(banned) { HashSet(banned) }
-        val members = (connected.value + myId) - banSnap
+        val members = (reachable() + myId) - banSnap
         val host = hostId.value
         return members.sortedWith(compareBy<String>({ if (it == host) 0 else 1 }, { it }))
     }
@@ -813,7 +980,7 @@ class NodeSession(
         var ready = false
         for (attempt in 0 until 10) {
             banSnap = synchronized(banned) { HashSet(banned) }
-            members = ((connected.value + myId) - banSnap).toList()
+            members = ((reachable() + myId) - banSnap).toList()
             if (members.all { it == myId || eks.containsKey(it) }) { ready = true; break }
             delay(500)
         }
@@ -895,7 +1062,7 @@ class NodeSession(
                 // Nobody legitimate may be left out (guards against a member sneaking a rival out).
                 // Members who connected in the last minute may not have been known to the leader yet.
                 val now = System.currentTimeMillis()
-                val view = (connected.value + myId) - synchronized(banned) { HashSet(banned) } - targets.toSet()
+                val view = (reachable() + myId) - synchronized(banned) { HashSet(banned) } - targets.toSet()
                 if (view.any { it !in recipients && now - (seenAt[it] ?: 0L) > 60_000L }) return
 
                 val mine = w.getJSONObject(myId)
@@ -967,6 +1134,8 @@ class NodeSession(
     private fun b64(b: ByteArray): String = Base64.encodeToString(b, Base64.NO_WRAP)
 
     companion object {
+        private const val REPORT_TTL = 75_000L
+        private const val SEEN_TTL = 10 * 60_000L
         private const val VOTE_EXPIRY_MS = 5 * 60_000L
         private const val VOTE_FRESH_MS = 10 * 60_000L
         private const val MAX_BUNDLES = 10

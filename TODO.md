@@ -17,6 +17,9 @@
 - [x] Background link service, comm-chirp alerts, encrypted message log with auto-purge
 - [x] Replies, copy, timestamps with CYCLE date dividers
 - [x] **Internet link (first version):** nodes now work across the internet as well as WiFi. Phones find each other through public Nostr relays (they only see encrypted notes under a hash of the node code), then link directly with WebRTC. WiFi is preferred when both phones share it. Operatives list shows VIA WIFI or VIA NET. Settings > LINK > Internet link (on by default; restart to apply).
+- [x] **Star Map:** each node has CHAT / STAR MAP tabs. MY LINKS shows you in the centre with operatives around you (solid cyan WIFI, dashed crimson NET, dotted relayed/seen), delay in ms, pulses when data moves, totals (linked, TX, RX, relays). FULL MESH shows every link between everyone, with amber warnings for pairs that can't link directly. Tap an operative for their card (route, delay, linked for, data, other shared nodes, NICK / REMOVE / VOTE OUT).
+- [x] **Constellation:** nodes menu > CONSTELLATION shows all your nodes as star systems, with operatives you share drawn as bridges. Built only from what your phone knows; never shared.
+- [x] **Relay through other operatives:** if two operatives can't link directly, one operative linked to both forwards their (still signed and encrypted) traffic. Settings > LINK > Relay for other operatives (on by default). Votes and key rotation now count relayed operatives too.
 - [x] **New:** Holo Glass UI on every screen (callsign, spin up / link, nodes menu, chat, full-screen settings), Night ops / Day shift themes, planet icon, comm chirp, Orbitron / Rajdhani / Share Tech Mono
 
 ## First build checklist (new repo)
@@ -58,9 +61,18 @@
 - [ ] Settings > Internet link OFF, restart: only WiFi links remain
 - [ ] Note which network combinations fail to link (some mobile carriers and work/school WiFi block direct links)
 
+## Test the Star Map and relaying (3 phones)
+- [ ] STAR MAP > MY LINKS: each operative shows VIA WIFI / VIA NET and a delay in ms within ~20 s; dots pulse while sending a photo
+- [ ] FULL MESH with 3 phones: three lines; force one pair apart (e.g. phone A WiFi-only with internet link off, phone C mobile data) and check the amber warning says RELAYED VIA B
+- [ ] With that setup, A and C can still message each other through B; turn B's "Relay for other operatives" off and the warning changes to CAN'T GET THROUGH
+- [ ] Tap an operative: card details are right; NICK, REMOVE (host) and VOTE OUT work
+- [ ] Remove someone while a pair is relayed: the key rotation reaches the relayed operative too
+- [ ] CONSTELLATION with 2+ nodes sharing a person: bridge drawn; tapping a system opens that node
+- [ ] Update ALL phones together: link reports changed the "hi" message format
+
 ## Internet link: known limits and next steps
 - [ ] **No relay fallback yet:** roughly 10-20% of network pairs (strict carrier or corporate firewalls) can't link directly. Fix: an optional encrypted TURN relay (would need a small server, or a free TURN service)
-- [ ] Full mesh: every phone uploads its own copy of each item to every other phone. Fine for small nodes; for 25 operatives on mobile data, add relaying through other phones (gossip)
+- [ ] Full mesh: every phone uploads its own copy of each item to every other phone. Relaying now only covers pairs that can't link directly (one hop); a smarter fan-out could cut upload for big nodes
 - [ ] Changing "Internet link" needs an app restart; make it apply live
 - [ ] Choose / add your own relays in Settings
 - [ ] Battery and data use check on mobile data

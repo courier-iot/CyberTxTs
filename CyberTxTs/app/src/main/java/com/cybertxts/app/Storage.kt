@@ -19,6 +19,7 @@ data class AppSettings(
     val keepVideos: Boolean = true,
     val keepAlive: Boolean = true,   // foreground service: stay connected with the screen off
     val internet: Boolean = true,    // also link over the internet (relays + direct WebRTC), not just WiFi
+    val relay: Boolean = true,       // forward frames for operatives who can't link to each other directly
     val quality: String = "standard", // default sending quality for photos and videos (a Quality key)
     val askQuality: Boolean = true,   // show the quality chooser every time
     val theme: String = "dark"        // "dark" (Night ops), "light" (Day shift) or "system"
@@ -32,6 +33,7 @@ object SettingsStore {
         keepVideos = p.getBoolean("s_vid", true),
         keepAlive = p.getBoolean("s_keep", true),
         internet = p.getBoolean("s_net", true),
+        relay = p.getBoolean("s_relay", true),
         quality = p.getString("s_q", "standard") ?: "standard",
         askQuality = p.getBoolean("s_ask", true),
         theme = p.getString("s_theme", "dark") ?: "dark"
@@ -39,7 +41,7 @@ object SettingsStore {
 
     fun save(p: SharedPreferences, s: AppSettings) {
         p.edit().putBoolean("s_hist", s.keepHistory).putInt("s_days", s.retentionDays)
-            .putBoolean("s_img", s.keepImages).putBoolean("s_vid", s.keepVideos).putBoolean("s_keep", s.keepAlive).putBoolean("s_net", s.internet)
+            .putBoolean("s_img", s.keepImages).putBoolean("s_vid", s.keepVideos).putBoolean("s_keep", s.keepAlive).putBoolean("s_net", s.internet).putBoolean("s_relay", s.relay)
             .putString("s_q", s.quality).putBoolean("s_ask", s.askQuality)
             .putString("s_theme", s.theme).apply()
     }

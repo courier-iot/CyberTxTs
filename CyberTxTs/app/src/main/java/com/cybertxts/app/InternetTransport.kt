@@ -458,6 +458,13 @@ class InternetTransport(context: Context, private val skip: (String) -> Boolean)
 
     fun isLinked(id: String) = links.containsKey(id)
 
+    override fun sendTo(ids: Set<String>, frame: ByteArray) {
+        val targets = links.values.filter { it.peerId in ids }
+        if (targets.isEmpty()) return
+        val enc = Crypto.encrypt(ring[0].second, frame)
+        scope.launch { targets.forEach { it.sendPaced(enc) } }
+    }
+
     fun relayCount(): Int = pool?.connectedRelays() ?: 0
 
     override fun stop() {
@@ -497,8 +504,24 @@ class MultiTransport(context: Context, internet: Boolean) : Transport {
 
     @Synchronized private fun emit() = onPeers(lanPeers + netPeers)
 
-    override fun send(frame: ByteArray) { lan.send(frame); net?.send(frame) }
-    override fun sendBlocking(frame: ByteArray) { lan.sendBlocking(frame); net?.sendBlocking(frame) }
+    private val tx = java.util.concurrent.atomic.AtomicLong()
+
+    /** Bytes handed to links so far (each copy counted), for the star map. */
+    fun txBytes(): Long = tx.get()
+
+    private fun count(frame: ByteArray, copies: Int) { tx.addAndGet(frame.size.toLong() * copies) }
+
+    override fun send(frame: ByteArray) { count(frame, (lanPeers + netPeers).size); lan.send(frame); net?.send(frame) }
+    override fun sendBlocking(frame: ByteArray) {
+        count(frame, (lanPeers + netPeers).size); lan.sendBlocking(frame); net?.sendBlocking(frame)
+    }
+    override fun sendTo(ids: Set<String>, frame: ByteArray) {
+        val viaLan = ids.filter { lan.isConnected(it) }.toSet()
+        val viaNet = ids - viaLan
+        count(frame, ids.size)
+        if (viaLan.isNotEmpty()) lan.sendTo(viaLan, frame)
+        if (viaNet.isNotEmpty()) net?.sendTo(viaNet, frame)
+    }
     override fun rekey(kid: String, key: SecretKey) { lan.rekey(kid, key); net?.rekey(kid, key) }
     override fun addLegacyKey(kid: String, key: SecretKey) { lan.addLegacyKey(kid, key); net?.addLegacyKey(kid, key) }
     override fun ban(id: String) { lan.ban(id); net?.ban(id) }

@@ -293,6 +293,15 @@ class LanTransport(context: Context) : Transport {
 
     fun isConnected(id: String) = conns.containsKey(id)
 
+    override fun sendTo(ids: Set<String>, frame: ByteArray) {
+        val targets = conns.filterKeys { it in ids }.values
+        if (targets.isEmpty()) return
+        val enc = Crypto.encrypt(ring[0].second, frame)
+        scope.launch {
+            targets.forEach { c -> runCatching { c.send(enc) }.onFailure { runCatching { c.socket.close() } } }
+        }
+    }
+
     override fun stop() {
         scope.cancel()
         resolveQueue.close()

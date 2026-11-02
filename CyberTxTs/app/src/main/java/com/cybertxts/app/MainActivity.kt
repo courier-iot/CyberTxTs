@@ -77,6 +77,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.foundation.layout.navigationBarsPadding
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -351,6 +352,12 @@ fun SettingsDialog(
                             "linked operatives can see your IP address. Takes effect after restarting the app.",
                         s.internet
                     ) { onChange(s.copy(internet = it)) }
+                    SettingRow(
+                        "Relay for other operatives",
+                        "If two operatives can't link directly, your phone forwards their encrypted traffic. " +
+                            "Uses some of your data and battery.",
+                        s.relay
+                    ) { onChange(s.copy(relay = it)) }
                     SettingRow("Hold link in background", "Stays connected with the screen off. Uses more battery.", s.keepAlive) {
                         onChange(s.copy(keepAlive = it))
                     }
@@ -372,7 +379,8 @@ fun SettingsDialog(
                 SettingsSection("DANGER ZONE") {
                     GhostButton("Purge all saved logs", Modifier.fillMaxWidth(), color = Holo.Danger) { confirmErase = true }
                 }
-                Spacer(Modifier.height(12.dp))
+                // Room to scroll the last item clear of Android's navigation bar
+                Spacer(Modifier.navigationBarsPadding().height(96.dp))
             }
         }
     }
@@ -583,6 +591,7 @@ fun NodeShell(vm: ChatViewModel, nodes: List<NodeSession>, active: NodeSession, 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var showSettings by remember { mutableStateOf(false) }
+    var showConstellation by remember { mutableStateOf(false) }
     val ctx = LocalContext.current
     val alias by vm.profileName.collectAsStateWithLifecycle()
 
@@ -597,6 +606,9 @@ fun NodeShell(vm: ChatViewModel, nodes: List<NodeSession>, active: NodeSession, 
     }
 
     if (showSettings) SettingsHost(vm) { showSettings = false }
+    if (showConstellation) {
+        ConstellationDialog(nodes, onPick = { vm.select(it); showConstellation = false }, onClose = { showConstellation = false })
+    }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -651,6 +663,10 @@ fun NodeShell(vm: ChatViewModel, nodes: List<NodeSession>, active: NodeSession, 
                             scope.launch { drawerState.close() }; onNew()
                         }
                         Spacer(Modifier.height(8.dp))
+                        GhostButton("Constellation", Modifier.fillMaxWidth(), color = Holo.Primary) {
+                            scope.launch { drawerState.close() }; showConstellation = true
+                        }
+                        Spacer(Modifier.height(8.dp))
                         GhostButton("Settings", Modifier.fillMaxWidth()) {
                             scope.launch { drawerState.close() }; showSettings = true
                         }
@@ -661,7 +677,10 @@ fun NodeShell(vm: ChatViewModel, nodes: List<NodeSession>, active: NodeSession, 
     ) {
         // key() gives each node its own fresh screen state (typed text, dialogs)
         key(active.tag) {
-            ChatScreen(active, onOpenMenu = { scope.launch { drawerState.open() } }, onOpenSettings = { showSettings = true })
+            ChatScreen(
+                active, onOpenMenu = { scope.launch { drawerState.open() } }, onOpenSettings = { showSettings = true },
+                alsoIn = { id -> nodes.filter { it !== active && id in it.memberIds() }.map { it.displayName() } }
+            )
         }
     }
 }
@@ -759,7 +778,11 @@ fun MembersDialog(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun ChatScreen(vm: NodeSession, onOpenMenu: () -> Unit, onOpenSettings: () -> Unit) {
+fun ChatScreen(
+    vm: NodeSession, onOpenMenu: () -> Unit, onOpenSettings: () -> Unit,
+    alsoIn: (String) -> List<String> = { emptyList() }
+) {
+    var tab by remember { mutableStateOf("chat") }
     val room by vm.room.collectAsStateWithLifecycle()
     val messages by vm.messages.collectAsStateWithLifecycle()
     val peers by vm.peers.collectAsStateWithLifecycle()
@@ -977,6 +1000,11 @@ fun ChatScreen(vm: NodeSession, onOpenMenu: () -> Unit, onOpenSettings: () -> Un
             }
         }
         HorizontalDivider(color = Holo.Primary.copy(alpha = 0.35f))
+        Box(Modifier.background(Holo.Panel.copy(alpha = 0.6f)).padding(horizontal = 12.dp, vertical = 8.dp)) {
+            ChoiceRow(listOf("chat" to "Chat", "map" to "Star map"), tab) { tab = it }
+        }
+
+        if (tab == "chat") {
 
         if (peers == 0) {
             val (text, color) = when {
@@ -1147,6 +1175,9 @@ fun ChatScreen(vm: NodeSession, onOpenMenu: () -> Unit, onOpenSettings: () -> Un
                     )
                 ) { Text("TX", fontFamily = Mono, fontSize = 15.sp, letterSpacing = 0.1.em) }
             }
+        }
+        } else {
+            StarMapView(vm, alsoIn)
         }
     }
     }

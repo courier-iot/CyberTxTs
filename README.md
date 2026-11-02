@@ -9,6 +9,8 @@
 - **Encryption:** everything is end-to-end encrypted with a key derived from the access key. After someone is removed (host kick or majority vote), the access key rotates automatically for everyone else; offline operatives catch up when they reconnect.
 - **Media:** IMG (Saver / Standard / High / Original), VID up to 5 minutes (360p / 480p / 720p), VOX notes up to 2 minutes (never stored). TX/RX progress; every piece is verified.
 - **Internet link:** phones find each other through public Nostr relays (they only ever see encrypted notes under a hash of the node code), then talk directly over WebRTC. WiFi is used instead when both phones share it.
+- **Star Map:** see who's linked and how (WiFi / net / relayed), delays and live activity; a full-mesh view with warnings for broken pairs; a Constellation of all your nodes.
+- **Relaying:** operatives who can't link directly are reached through someone linked to both (optional, on by default).
 - **Holds link** in the background with a notification; comm-chirp message alerts.
 - **Message log** saved encrypted on the device only, with auto-purge options.
 - **Look:** Holo Glass. Deep-space Night ops theme (neon cyan for you, crimson for others) or Day shift; open clipped-corner panels; log-style names (`VEGA//7F3A · 21:04`); IMG / VOX / TX readouts; Orbitron, Rajdhani and Share Tech Mono fonts.
@@ -34,7 +36,8 @@ CyberTxTs/                              Android project (Kotlin + Jetpack Compos
     Media.kt            IMG/VID compression, original photos, VOX recorder/player, encrypted media store
     Storage.kt          settings and encrypted message log
     SessionService.kt   background link + notifications
-    MainActivity.kt     all screens
+    MainActivity.kt     all screens except the maps
+    StarMap.kt          Star Map tab, operative card, Constellation
     Theme.kt            Night ops / Day shift colours, fonts, open-corner panels, orbit mark, starfield
   app/src/main/res/     planet icon, splash, notification icon, comm chirp sound
 TODO.md                 to-do list, test checklists, signing steps
