@@ -123,7 +123,10 @@ class MainActivity : FragmentActivity() {
                         contentColor = Holo.Ink,
                         modifier = Modifier.fillMaxSize().safeDrawingPadding()
                     ) {
-                        if (locked) LockScreen(vm) else AppRoot(vm)
+                        if (locked) {
+                            LockScreen(vm)
+                            CallOverlay(vm)      // an ongoing or incoming call stays reachable while the app is locked
+                        } else AppRoot(vm)
                     }
                 }
             }

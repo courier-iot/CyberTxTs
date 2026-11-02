@@ -1,6 +1,15 @@
 package com.cybertxts.app
 
+import android.app.Notification
 import android.app.NotificationChannel
+import android.app.Service
+import android.content.pm.ServiceInfo
+import android.media.AudioFocusRequest
+import android.os.Build
+import android.os.IBinder
+import android.os.PowerManager
+import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
@@ -230,8 +239,49 @@ class CallManager(
     private var timeout: Job? = null
     private var ringtone: Ringtone? = null
     private val audio = app.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private var focus: AudioFocusRequest? = null
+    private var proximity: PowerManager.WakeLock? = null
+    @Volatile private var serviceOn = false
+    private var shown = ""
 
     private fun update(f: (CallUi) -> CallUi) { ui.value?.let { ui.value = f(it) } }
+
+    init {
+        // Whenever the call changes: keep the background service and its notification in step
+        scope.launch { ui.collect { runCatching { onUi(it) } } }
+    }
+
+    /**
+     * While a call is live, a microphone (and camera) foreground service keeps it running when you leave the
+     * app or turn the screen off. It's started the moment you place or answer a call (you're in the app then,
+     * which Android requires), and stopped when the call ends.
+     */
+    private fun onUi(c: CallUi?) {
+        val live = c != null && c.phase in setOf("calling", "connecting", "active", "reconnecting")
+        if (live && c != null) {
+            if (!serviceOn) { serviceOn = true; CallService.start(app, c.video) }
+            val key = "${c.id}|${c.phase}|${c.startedAt}|${c.muted}|${c.name}"
+            if (key != shown) { shown = key; CallService.show(app, c) }
+        } else if (serviceOn) {
+            serviceOn = false; shown = ""
+            CallService.stop(app)
+        }
+        // Voice call held to the ear: the proximity sensor turns the screen off so your cheek can't tap anything
+        setProximity(live && c != null && c.phase == "active" && !c.video && !c.speaker)
+    }
+
+    private fun setProximity(on: Boolean) {
+        runCatching {
+            val pm = app.getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (on) {
+                if (proximity == null && pm.isWakeLockLevelSupported(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK)) {
+                    proximity = pm.newWakeLock(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK, "cybertxts:call").apply {
+                        setReferenceCounted(false); acquire(4 * 3_600_000L)
+                    }
+                }
+            } else { proximity?.let { if (it.isHeld) it.release() }; proximity = null }
+        }
+    }
 
     private fun newEngine(video: Boolean): CallEngine = CallEngine(app, video,
         onIce = { st ->
@@ -248,6 +298,14 @@ class CallManager(
 
     private fun audioOn(speaker: Boolean) {
         runCatching {
+            // Pause music and other apps' sound for the length of the call
+            val f = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+                .build()
+            audio.requestAudioFocus(f); focus = f
+        }
+        runCatching {
             audio.mode = AudioManager.MODE_IN_COMMUNICATION
             audio.isSpeakerphoneOn = speaker
         }
@@ -258,6 +316,7 @@ class CallManager(
             audio.isSpeakerphoneOn = false
             audio.mode = AudioManager.MODE_NORMAL
         }
+        runCatching { focus?.let { audio.abandonAudioFocusRequest(it) }; focus = null }
     }
 
     /** Ring someone. Needs the microphone (and camera for video) permission first. */
@@ -420,5 +479,93 @@ class CallManager(
     companion object {
         private const val CH_CALLS = "calls"
         private const val ID_CALL = 4100
+    }
+}
+
+
+/**
+ * Foreground service for a live call (type microphone, plus camera for video calls). It does no work itself:
+ * it tells Android the call must keep its microphone and camera while CyberTxTs is in the background, and
+ * shows the ongoing "call in progress" notification with Mute and Hang up.
+ */
+class CallService : Service() {
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val video = intent?.getBooleanExtra("video", false) ?: false
+        var type = 0
+        if (Build.VERSION.SDK_INT >= 30) {
+            type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            if (video) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+        }
+        val n = last ?: build(this, null)
+        try {
+            ServiceCompat.startForeground(this, ID, n, type)
+        } catch (e: Exception) {
+            // Android refused (e.g. permission missing): the call still works while the app is open
+            stopSelf()
+        }
+        return START_NOT_STICKY
+    }
+
+    companion object {
+        const val ID = 4102
+        private const val CH = "call_active"
+        @Volatile private var last: Notification? = null
+
+        fun start(ctx: Context, video: Boolean) {
+            last = build(ctx, null)
+            runCatching { ContextCompat.startForegroundService(ctx, Intent(ctx, CallService::class.java).putExtra("video", video)) }
+        }
+
+        /** Refresh the ongoing notification (timer, mute state) without restarting the service. */
+        fun show(ctx: Context, c: CallUi) {
+            val n = build(ctx, c)
+            last = n
+            runCatching { (ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(ID, n) }
+        }
+
+        fun stop(ctx: Context) {
+            last = null
+            runCatching { ctx.stopService(Intent(ctx, CallService::class.java)) }
+            runCatching { (ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(ID) }
+        }
+
+        private fun build(ctx: Context, c: CallUi?): Notification {
+            val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (nm.getNotificationChannel(CH) == null) {
+                nm.createNotificationChannel(NotificationChannel(CH, "Call in progress", NotificationManager.IMPORTANCE_LOW).apply {
+                    description = "Shown while you're on a call"
+                    setSound(null, null)
+                })
+            }
+            fun action(kind: String, req: Int) = PendingIntent.getBroadcast(
+                ctx, req, Intent(ctx, NotifyActions::class.java).setAction("cybertxts.$kind"),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            val open = PendingIntent.getActivity(
+                ctx, 8, Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            val who = if (c == null || AppState.hideAlertText) "" else " · " + c.name
+            val status = when (c?.phase) {
+                "calling" -> "Calling…"; "connecting" -> "Connecting…"; "reconnecting" -> "Reconnecting…"
+                "active" -> if (c.muted) "On call · muted" else "On call"
+                else -> "Call"
+            }
+            val b = NotificationCompat.Builder(ctx, CH).setSmallIcon(R.drawable.ic_stat_node)
+                .setContentTitle((if (c?.video == true) "Video call" else "Voice call") + who)
+                .setContentText(status)
+                .setCategory(NotificationCompat.CATEGORY_CALL)
+                .setOngoing(true).setOnlyAlertOnce(true).setSilent(true)
+                .setContentIntent(open)
+                .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+            if (c != null && c.phase == "active" && c.startedAt > 0) b.setUsesChronometer(true).setWhen(c.startedAt).setShowWhen(true)
+            if (c != null) {
+                b.addAction(NotificationCompat.Action.Builder(R.drawable.ic_stat_node, if (c.muted) "Unmute" else "Mute", action("call_mute", 21)).build())
+                b.addAction(NotificationCompat.Action.Builder(R.drawable.ic_stat_node, "Hang up", action("call_hangup", 22)).build())
+            }
+            return b.build()
+        }
     }
 }

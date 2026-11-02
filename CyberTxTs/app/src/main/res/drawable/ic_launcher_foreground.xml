@@ -1,16 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- CyberTxTs icon: neon planet with a crimson orbit ring and moon (adaptive icon foreground, 108dp) -->
+<!-- CyberTxTs icon "Signal": a chat-bubble planet with a crimson orbit ring and moon (adaptive icon foreground, 108dp) -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <!-- back half of the ring (dimmed, passes behind the planet) -->
     <group android:rotation="-22" android:pivotX="54" android:pivotY="54">
-        <path android:fillColor="#00000000" android:strokeColor="#FF2A4D" android:strokeWidth="2.6" android:pathData="M18,54 A36,11 0 1,0 90,54 A36,11 0 1,0 18,54 Z" />
+        <path android:fillColor="#00000000" android:strokeColor="#FF2A4D" android:strokeWidth="3" android:strokeAlpha="0.6"
+            android:pathData="M21,54 A33,10.5 0 1,0 87,54 A33,10.5 0 1,0 21,54 Z" />
     </group>
-    <path android:fillColor="#0D1022" android:strokeColor="#00E5FF" android:strokeWidth="3.2"
-        android:pathData="M54,35 A19,19 0 1,0 54.01,35 Z" />
-    <path android:fillColor="#00000000" android:strokeColor="#00E5FF" android:strokeWidth="1.2" android:strokeAlpha="0.55"
-        android:pathData="M42,47 L66,47 M40,54 L68,54 M42,61 L66,61" />
+    <!-- planet with a speech-bubble tail -->
+    <path android:fillColor="#0D1022" android:strokeColor="#00E5FF" android:strokeWidth="3"
+        android:strokeLineCap="round" android:strokeLineJoin="round"
+        android:pathData="M48.13,72.07 A19,19 0 1,0 38.25,64.62 L33.5,77 Z" />
+    <!-- message lines -->
+    <path android:fillColor="#00000000" android:strokeColor="#00E5FF" android:strokeWidth="2.2" android:strokeAlpha="0.75"
+        android:strokeLineCap="round"
+        android:pathData="M44,46.5 L65,46.5 M44,54 L61,54 M44,61.5 L55,61.5" />
+    <!-- front half of the ring and the moon -->
     <group android:rotation="-22" android:pivotX="54" android:pivotY="54">
-        <path android:fillColor="#00000000" android:strokeColor="#FF2A4D" android:strokeWidth="2.6" android:pathData="M18,54 A36,11 0 0,0 90,54" />
-        <path android:fillColor="#FF2A4D" android:pathData="M87.8,57.8 m-4.2,0 a4.2,4.2 0 1,0 8.4,0 a4.2,4.2 0 1,0 -8.4,0" />
+        <path android:fillColor="#00000000" android:strokeColor="#FF2A4D" android:strokeWidth="3" android:strokeLineCap="round"
+            android:pathData="M21,54 A33,10.5 0 0,0 87,54" />
+        <path android:fillColor="#FF2A4D" android:pathData="M84.6,57.93 m-4.4,0 a4.4,4.4 0 1,0 8.8,0 a4.4,4.4 0 1,0 -8.8,0" />
     </group>
 </vector>

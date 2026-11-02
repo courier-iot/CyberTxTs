@@ -233,6 +233,10 @@ class NotifyActions : BroadcastReceiver() {
     override fun onReceive(ctx: Context, intent: Intent) {
         val app = ctx.applicationContext as? CyberApp ?: return
         val vm = app.chatVm()
+        when (intent.action) {
+            "cybertxts.call_hangup" -> { vm.calls.hangUp(); return }
+            "cybertxts.call_mute" -> { vm.calls.toggleMute(); return }
+        }
         val tag = intent.getStringExtra("tag") ?: return
         val dm = intent.getStringExtra("dm")?.ifEmpty { null }
         val s = vm.sessionByTag(tag) ?: return

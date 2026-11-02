@@ -8,6 +8,9 @@
     <!-- Foreground service: keeps the room connected with the screen off -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <!-- Calls keep the microphone (and camera, for video) when you leave the app -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
@@ -30,6 +33,10 @@
         android:theme="@style/Theme.CyberTxTs">
 
         <receiver android:name=".NotifyActions" android:exported="false" />
+        <service
+            android:name=".CallService"
+            android:exported="false"
+            android:foregroundServiceType="microphone|camera" />
         <service
             android:name=".SessionService"
             android:exported="false"
