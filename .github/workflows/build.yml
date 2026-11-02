@@ -1,0 +1,55 @@
+name: Build test APK
+
+# Test builds install as a separate app, "CyberTxTs Dev", next to the real release.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: CyberTxTs
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+          build-root-directory: CyberTxTs
+
+      - name: Fetch fonts
+        run: bash ../.github/scripts/fetch-fonts.sh
+
+      # Permanent signing key (from the SIGNING_KEYSTORE secret), so test builds install over each other.
+      - name: Set up signing key
+        env:
+          SIGNING_KEYSTORE: ${{ secrets.SIGNING_KEYSTORE }}
+        run: |
+          if [ -z "$SIGNING_KEYSTORE" ]; then
+            echo "::warning::No SIGNING_KEYSTORE secret yet, so this build uses a temporary key (it won't install over other builds)."
+            exit 0
+          fi
+          echo "$SIGNING_KEYSTORE" | base64 -d > "$RUNNER_TEMP/cybertxts.p12"
+          echo "SIGNING_KEYSTORE_PATH=$RUNNER_TEMP/cybertxts.p12" >> "$GITHUB_ENV"
+
+      - name: Build debug APK
+        env:
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+        run: gradle assembleDebug --no-daemon
+
+      - name: Rename APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk CyberTxTs-Dev.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CyberTxTs-Dev-apk
+          path: CyberTxTs/CyberTxTs-Dev.apk

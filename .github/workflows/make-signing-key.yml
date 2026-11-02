@@ -1,0 +1,44 @@
+name: Make signing key (run once)
+
+# Run this ONE time, by hand, after adding the SIGNING_PASSWORD secret.
+# It creates CyberTxTs' permanent signing key and hands it to you as a download for 1 day.
+# It refuses to run if a key already exists, because a new key would stop updates installing.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  make-key:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Create the key
+        env:
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+          EXISTING_KEY: ${{ secrets.SIGNING_KEYSTORE }}
+        run: |
+          if [ -n "$EXISTING_KEY" ]; then
+            echo "::error::A signing key already exists (SIGNING_KEYSTORE secret). Making a new one would stop updates installing, so nothing was done."
+            exit 1
+          fi
+          if [ ${#SIGNING_PASSWORD} -lt 12 ]; then
+            echo "::error::First add a repository secret named SIGNING_PASSWORD, at least 12 characters long."
+            exit 1
+          fi
+          keytool -genkeypair -keystore cybertxts.p12 -storetype PKCS12 \
+            -alias cybertxts -keyalg RSA -keysize 4096 -validity 36500 \
+            -storepass "$SIGNING_PASSWORD" -keypass "$SIGNING_PASSWORD" \
+            -dname "CN=CyberTxTs, O=Stellarite"
+          base64 -w0 cybertxts.p12 > SIGNING_KEYSTORE.txt
+          rm cybertxts.p12
+          echo "Key created. Download the artifact, copy the text into a SIGNING_KEYSTORE secret, then delete the artifact."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signing-key-copy-into-secret-then-delete
+          path: SIGNING_KEYSTORE.txt
+          retention-days: 1
