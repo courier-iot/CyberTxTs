@@ -11,7 +11,7 @@
 - **Internet link:** phones find each other through public Nostr relays (they only ever see encrypted notes under a hash of the node code), then talk directly over WebRTC. WiFi is used instead when both phones share it.
 - **No Google services:** works on de-Googled phones (QR scanning via ZXing, Cloudflare STUN).
 - **Invites:** QR codes and tap-to-link `cybertxts://` links that pin the host's fingerprint (no host spoofing).
-- **Chat extras:** private channels (sealed to one operative), ✓ / ✓✓ / READ marks, typing indicator, reactions, edit and retract, per-node mute, cancel / retry transfers.
+- **Chat extras:** private channels with text, photos, video and voice (sealed to one operative), ✓ / ✓✓ / READ marks, typing indicator, reactions, edit and retract, per-node mute, cancel / retry transfers.
 - **Star Map:** see who's linked and how (WiFi / net / relayed), delays and live activity; a full-mesh view with warnings for broken pairs; a Constellation of all your nodes.
 - **Relaying:** operatives who can't link directly are reached through someone linked to both (optional, on by default).
 - **Holds link** in the background with a notification; comm-chirp message alerts.
@@ -43,6 +43,7 @@ CyberTxTs/                              Android project (Kotlin + Jetpack Compos
     StarMap.kt          Star Map tab, operative card, Constellation
     Invite.kt           invite links and QR codes
     Scanner.kt          QR scan screen (ZXing, no Google services)
+    Diagnostics.kt      link diagnostics and linking by address
     Theme.kt            Night ops / Day shift colours, fonts, open-corner panels, orbit mark, starfield
   app/src/main/res/     planet icon, splash, notification icon, comm chirp sound
 TODO.md                 to-do list, test checklists, signing steps

@@ -18,6 +18,11 @@
 - [x] Replies, copy, timestamps with CYCLE date dividers
 - [x] **Internet link (first version):** nodes now work across the internet as well as WiFi. Phones find each other through public Nostr relays (they only see encrypted notes under a hash of the node code), then link directly with WebRTC. WiFi is preferred when both phones share it. Operatives list shows VIA WIFI or VIA NET. Settings > LINK > Internet link (on by default; restart to apply).
 - [x] **QR invites + host verification:** INVITE shows a QR code with the node code, access key and the host's fingerprint, plus a SHARE LINK button (cybertxts:// link opens the app). LINK TO NODE > SCAN QR INVITE. Joining from a QR or link pins the host, so nobody else can claim to be host. Operatives list shows ★ HOST · VERIFIED.
+- [x] **Private media:** IMG, VID and VOX now work in private channels. Each item gets its own key sealed to the recipient, goes only to them (or through the one relaying operative), and relays can't open it.
+- [x] **Long-press on pictures:** long-press a photo or video directly for the same menu as text (react, reply, message privately, retract).
+- [x] **Link diagnostics:** ⋮ > LINK DIAGNOSTICS (or DIAGNOSE on the "No link found" banner) shows WiFi status, your address, discovery and relay status, and plain-words fixes. A crimson ROUTER BLOCKING banner appears when operatives are found on WiFi but can't connect (client isolation).
+- [x] **Link by address:** type another phone's address (from its diagnostics screen) when discovery doesn't work. Each node now keeps a steady port.
+- [x] **Internet link switch applies instantly** (no restart).
 - [x] **No Google services:** QR scanning now uses ZXing Android Embedded with our own Holo Glass scan screen (open-corner frame, sweep line, LIGHT, FROM GALLERY). Works on phones without Google Play Services. Internet link uses only Cloudflare's STUN server. Invite QRs are now dark-on-cyan so any scanner reads them.
 - [x] **Key-rotation tie-break:** if two operatives rotate the key at the same instant, every phone settles on the same winner, so a node can't split.
 - [x] **Original photos:** XMP and IPTC blocks (which can hold location) are now stripped too.
@@ -55,9 +60,7 @@
 
 ## Follow-ups
 - [ ] Faster sharing in big nodes (one slow phone slows everyone; 25 copies uploaded)
-- [ ] Clearer "can't link" diagnostics; manual IP fallback; router client-isolation warning
 - [ ] Battery check overnight
-- [ ] Long-press menu directly on IMG / VID pictures
 - [ ] Glow effect on panels (the mockups' soft neon halo; skipped in the app for now)
 
 ## Test the internet link (needs 2+ phones on DIFFERENT networks)
@@ -67,6 +70,16 @@
 - [ ] Remove someone over NET: key rotates; a phone that was offline catches up when it comes back
 - [ ] Settings > Internet link OFF, restart: only WiFi links remain
 - [ ] Note which network combinations fail to link (some mobile carriers and work/school WiFi block direct links)
+
+## Test this round (update ALL phones together)
+- [ ] Private channel: send IMG, VID and VOX; only the recipient gets them; a third phone shows nothing
+- [ ] Private media through a relay (A and C not directly linked, B relaying): arrives at C; B shows nothing
+- [ ] Private media to someone not linked: "Can't reach … privately" and RETRY works once they link
+- [ ] Long-press a photo and a video: menu opens; a normal tap still opens / plays
+- [ ] ⋮ > LINK DIAGNOSTICS: WiFi, address, discovery and relay lines look right; turn WiFi off and it says NOT ON WIFI
+- [ ] Guest / public WiFi with client isolation: ROUTER BLOCKING banner (internet link off makes it easier to see)
+- [ ] Link by address: two phones on the same WiFi, type one's address into the other; they link
+- [ ] Settings > Internet link off: NET links drop straight away; on again: they come back within ~30 s
 
 ## Test security + everyday features (update ALL phones together)
 - [ ] First scan asks for camera permission; decline it and FROM GALLERY still works with a screenshot of the invite
@@ -85,7 +98,6 @@
 - [ ] Two phones remove the same person at nearly the same moment: everyone ends on the same key (no split)
 
 ## Everyday follow-ups
-- [ ] Photos / voice / video in private channels
 - [ ] Sign receipts and typing signals (currently unsigned; only node members can send them)
 - [ ] Edit history / "edited at" time
 
@@ -101,7 +113,6 @@
 ## Internet link: known limits and next steps
 - [ ] **No relay fallback yet:** roughly 10-20% of network pairs (strict carrier or corporate firewalls) can't link directly. Fix: an optional encrypted TURN relay (would need a small server, or a free TURN service)
 - [ ] Full mesh: every phone uploads its own copy of each item to every other phone. Relaying now only covers pairs that can't link directly (one hop); a smarter fan-out could cut upload for big nodes
-- [ ] Changing "Internet link" needs an app restart; make it apply live
 - [ ] Choose / add your own relays in Settings
 - [ ] Battery and data use check on mobile data
 - [ ] Peers can see each other's IP address (normal for direct links); a relay fallback could hide it as an option

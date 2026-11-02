@@ -380,7 +380,7 @@ fun SettingsDialog(
                     SettingRow(
                         "Internet link",
                         "Reach operatives anywhere, not just on your WiFi. Content stays end-to-end encrypted; " +
-                            "linked operatives can see your IP address. Takes effect after restarting the app.",
+                            "linked operatives can see your IP address.",
                         s.internet
                     ) { onChange(s.copy(internet = it)) }
                     SettingRow(
@@ -836,6 +836,7 @@ fun ChatScreen(
     var editingId by remember { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf<Msg?>(null) }
     var showInvite by remember { mutableStateOf(false) }
+    var showDiag by remember { mutableStateOf(false) }
     var nowTick by remember { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) { while (true) { delay(1_000); nowTick = System.currentTimeMillis() } }
     DisposableEffect(dmPeer) {
@@ -863,6 +864,7 @@ fun ChatScreen(
     var openPhoto by remember { mutableStateOf<Msg?>(null) }
     var openVideo by remember { mutableStateOf<Msg?>(null) }
     var pendingMedia by remember { mutableStateOf<Pair<Uri, Boolean>?>(null) }   // (picked item, is it a video)
+    var pendingDm by remember { mutableStateOf<String?>(null) }                    // channel it was picked in
     var replyingTo by remember { mutableStateOf<Msg?>(null) }
     var menuFor by remember { mutableStateOf<String?>(null) }        // message whose long-press menu is open
     var nickFor by remember { mutableStateOf<Pair<String, String>?>(null) }   // (person id, alias)
@@ -881,9 +883,9 @@ fun ChatScreen(
             val isVideo = (ctx.contentResolver.getType(uri) ?: "").startsWith("video")
             val q = Quality.of(vm.settings.value.quality)
             when {
-                vm.settings.value.askQuality -> pendingMedia = uri to isVideo
-                isVideo -> vm.sendVideo(uri, q)
-                else -> vm.sendPhoto(uri, q)
+                vm.settings.value.askQuality -> { pendingMedia = uri to isVideo; pendingDm = dmPeer }
+                isVideo -> vm.sendVideo(uri, q, dmPeer)
+                else -> vm.sendPhoto(uri, q, dmPeer)
             }
         }
     }
@@ -898,7 +900,7 @@ fun ChatScreen(
         recording = false
         if (send) {
             val res = recorder.stop()
-            if (res != null) vm.sendVoice(res.first, res.second)
+            if (res != null) vm.sendVoice(res.first, res.second, dmPeer)
             else Toast.makeText(ctx, "Too short. Tap VOX, speak, then tap TX.", Toast.LENGTH_SHORT).show()
         } else recorder.cancel()
     }
@@ -933,13 +935,22 @@ fun ChatScreen(
     }
     // Live link status for the banner: how many public relays this phone has reached (-1 = internet link off)
     var relays by remember { mutableStateOf(0) }
+    var lanStuck by remember { mutableStateOf(0) }
+    var offWifi by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
-        while (true) { relays = vm.relayCount(); delay(3_000) }
+        while (true) {
+            relays = vm.relayCount()
+            val li = withContext(Dispatchers.Default) { runCatching { vm.linkInfo() }.getOrNull() }
+            lanStuck = li?.lanStuck ?: 0
+            offWifi = li?.onWifi == false
+            delay(3_000)
+        }
     }
 
     fun invite() { showInvite = true }
 
     if (showInvite) InviteDialog(vm) { showInvite = false }
+    if (showDiag) LinkDiagnosticsDialog(vm) { showDiag = false }
     val cd = confirmDelete
     if (cd != null) {
         AlertDialog(
@@ -962,11 +973,11 @@ fun ChatScreen(
     val pm = pendingMedia
     if (pm != null) {
         QualityDialog(
-            uri = pm.first, isVideo = pm.second, others = peers,
+            uri = pm.first, isVideo = pm.second, others = if (pendingDm != null) 1 else peers,
             default = Quality.of(settings.quality),
             onSend = { q ->
                 pendingMedia = null
-                if (pm.second) vm.sendVideo(pm.first, q) else vm.sendPhoto(pm.first, q)
+                if (pm.second) vm.sendVideo(pm.first, q, pendingDm) else vm.sendPhoto(pm.first, q, pendingDm)
             },
             onClose = { pendingMedia = null }
         )
@@ -1056,6 +1067,8 @@ fun ChatScreen(
                 ) {
                     DropdownMenuItem(text = { Text("OPERATIVES (${peers + 1})", fontFamily = Mono) },
                         onClick = { menuOpen = false; showMembers = true })
+                    DropdownMenuItem(text = { Text("LINK DIAGNOSTICS", fontFamily = Mono) },
+                        onClick = { menuOpen = false; showDiag = true })
                     DropdownMenuItem(text = { Text(if (mutedNode) "UNMUTE ALERTS" else "MUTE ALERTS", fontFamily = Mono) },
                         onClick = { menuOpen = false; vm.setMuted(!mutedNode) })
                     DropdownMenuItem(text = { Text("RENAME NODE", fontFamily = Mono) },
@@ -1086,6 +1099,8 @@ fun ChatScreen(
                         "ask an operative for the new one." to Holo.Danger
             }
             val status = when {
+                offWifi && relays < 0 -> "NOT ON WIFI · INTERNET LINK OFF"
+                offWifi -> "NOT ON WIFI · RELAYS ${maxOf(relays, 0)}/${NostrPool.DEFAULT_RELAYS.size} ONLINE"
                 relays < 0 -> "WIFI SCAN ACTIVE · INTERNET LINK OFF"
                 relays == 0 -> "WIFI SCAN ACTIVE · CONNECTING TO RELAYS…"
                 else -> "WIFI SCAN ACTIVE · RELAYS $relays/${NostrPool.DEFAULT_RELAYS.size} ONLINE"
@@ -1095,7 +1110,23 @@ fun ChatScreen(
             ) {
                 Text(text, style = MaterialTheme.typography.bodyMedium)
                 Spacer(Modifier.height(6.dp))
-                MonoLabel(status, if (relays == 0) Holo.Accent else Holo.Primary)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    MonoLabel(status, if (relays == 0 || offWifi) Holo.Accent else Holo.Primary, modifier = Modifier.weight(1f))
+                    if (searchedTooLong || offWifi) GhostButton("Diagnose", height = 36, color = Holo.Primary) { showDiag = true }
+                }
+            }
+        }
+        if (lanStuck > 0) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 4.dp)
+                    .openPanel(Holo.Panel, Holo.Accent.copy(alpha = 0.7f)).padding(start = 10.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    MonoLabel("ROUTER BLOCKING $lanStuck OPERATIVE${if (lanStuck == 1) "" else "S"}", Holo.Accent, size = 12)
+                    MonoLabel("FOUND ON WIFI BUT CAN'T CONNECT", Holo.InkDim, size = 10)
+                }
+                GhostButton("Why?", height = 36, color = Holo.Accent) { showDiag = true }
             }
         }
 
@@ -1193,9 +1224,9 @@ fun ChatScreen(
                             if (m.deleted) {
                                 Text("[ TRANSMISSION RETRACTED ]", fontFamily = Mono, fontSize = 12.sp, color = Holo.InkDim)
                             } else if (m.image != null) {
-                                PhotoBubble(vm, m, transfers[m.id], mine) { openPhoto = m }
+                                PhotoBubble(vm, m, transfers[m.id], mine, onLongClick = showMenu) { openPhoto = m }
                             } else if (m.video != null) {
-                                VideoBubble(vm, m, transfers[m.id], preparing[m.id], mine) { openVideo = m }
+                                VideoBubble(vm, m, transfers[m.id], preparing[m.id], mine, onLongClick = showMenu) { openVideo = m }
                             } else if (m.voice != null) {
                                 VoiceBubble(vm, m, transfers[m.id], mine)
                             } else {
@@ -1324,10 +1355,10 @@ fun ChatScreen(
                 Modifier.fillMaxWidth().background(Holo.Panel.copy(alpha = 0.9f)).padding(start = 10.dp, end = 10.dp, top = 10.dp, bottom = 14.dp),
                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                if (dmPeer == null) GhostButton("IMG", Modifier.width(48.dp), description = "Send photo or video") {
+                GhostButton("IMG", Modifier.width(48.dp), description = if (dmPeer != null) "Send photo or video privately" else "Send photo or video") {
                     photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
                 }
-                if (dmPeer == null) GhostButton("VOX", Modifier.width(48.dp), description = "Record voice note") {
+                GhostButton("VOX", Modifier.width(48.dp), description = if (dmPeer != null) "Record private voice note" else "Record voice note") {
                     if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                         startRecording()
                     } else micPermission.launch(Manifest.permission.RECORD_AUDIO)
@@ -1393,8 +1424,9 @@ fun TransferBar(p: Float?, mine: Boolean, vm: NodeSession? = null, m: Msg? = nul
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun PhotoBubble(vm: NodeSession, m: Msg, progress: Float?, mine: Boolean, onClick: () -> Unit) {
+fun PhotoBubble(vm: NodeSession, m: Msg, progress: Float?, mine: Boolean, onLongClick: () -> Unit = {}, onClick: () -> Unit) {
     // Incoming photos only exist once every piece has arrived, so reload when the transfer finishes
     val arriving = !mine && progress != null
     val state by produceState<Pair<Boolean, ImageBitmap?>>(false to null, m.image, arriving) {
@@ -1408,7 +1440,7 @@ fun PhotoBubble(vm: NodeSession, m: Msg, progress: Float?, mine: Boolean, onClic
             Image(
                 bitmap = bmp, contentDescription = "Photo", contentScale = ContentScale.Fit,
                 modifier = Modifier.widthIn(max = 240.dp).heightIn(max = 320.dp)
-                    .clickable(onClick = onClick)
+                    .combinedClickable(onClick = onClick, onLongClick = onLongClick, onClickLabel = "Open photo")
             )
         } else {
             Text(
@@ -1534,8 +1566,12 @@ fun RenameDialog(current: String, code: String, onSave: (String) -> Unit, onClos
 
 // ---------- Videos ----------
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun VideoBubble(vm: NodeSession, m: Msg, progress: Float?, preparing: Float?, mine: Boolean, onClick: () -> Unit) {
+fun VideoBubble(
+    vm: NodeSession, m: Msg, progress: Float?, preparing: Float?, mine: Boolean,
+    onLongClick: () -> Unit = {}, onClick: () -> Unit
+) {
     val arriving = !mine && progress != null
     val thumb by produceState<ImageBitmap?>(null, m.video, arriving) {
         value = withContext(Dispatchers.IO) {
@@ -1548,7 +1584,7 @@ fun VideoBubble(vm: NodeSession, m: Msg, progress: Float?, preparing: Float?, mi
     Column {
         Box(
             Modifier.widthIn(max = 240.dp)
-                .then(if (playable) Modifier.clickable(onClick = onClick) else Modifier),
+                .combinedClickable(onClick = { if (playable) onClick() }, onLongClick = onLongClick, onClickLabel = "Play video"),
             contentAlignment = Alignment.Center
         ) {
             val t = thumb

@@ -166,7 +166,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun updateSettings(s: AppSettings) {
         val keepChanged = s.keepAlive != settings.value.keepAlive
+        val netChanged = s.internet != settings.value.internet
         settings.value = s
+        if (netChanged) nodes.value.forEach { runCatching { it.applyInternet(s.internet) } }
         SettingsStore.save(prefs, s)
         if (keepChanged && nodes.value.isNotEmpty()) {
             if (s.keepAlive) SessionService.start(getApplication()) else SessionService.stop(getApplication())

@@ -27,6 +27,10 @@ import java.security.SecureRandom
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import javax.crypto.Cipher
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
 import kotlin.math.abs
 
 data class Msg(
@@ -298,7 +302,12 @@ class NodeSession(
                 "kv" -> handleVote(j)
                 "rekey" -> scope.launch(Dispatchers.Default) { acceptBundle(j) }
             }
-            if (origin != null) maybeRelay(origin, bytes)
+            val onlyTo = when (type) {
+                "dm", "media" -> j.optString("to").ifEmpty { null }
+                "mc" -> mediaTo[j.optString("id")]
+                else -> null
+            }
+            if (origin != null) maybeRelay(origin, bytes, onlyTo)
         } catch (_: Exception) {}
     }
 
@@ -381,6 +390,7 @@ class NodeSession(
     private val rxFrom = ConcurrentHashMap<String, Long>()
     private val rxBytes = java.util.concurrent.atomic.AtomicLong()
     private val mediaOrigin = ConcurrentHashMap<String, String>()
+    private val mediaTo = ConcurrentHashMap<String, String>()        // private media id -> recipient
     private val relayed = object : LinkedHashMap<String, Boolean>(256, 0.75f, false) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>?) = size > 4000
     }
@@ -416,10 +426,11 @@ class NodeSession(
         }.minOrNull()
 
     /** Forward a frame from [origin] to my direct links that can't reach origin themselves (one hop). */
-    private fun maybeRelay(origin: String, bytes: ByteArray) {
+    private fun maybeRelay(origin: String, bytes: ByteArray, onlyTo: String? = null) {
         if (!settings.value.relay || origin == myId) return
         val targets = connected.value.filter { p ->
-            p != origin && linkedPair(p, origin) == false && chosenRelay(origin, p) == myId
+            (onlyTo == null || p == onlyTo) &&
+                p != origin && linkedPair(p, origin) == false && chosenRelay(origin, p) == myId
         }.toSet()
         if (targets.isEmpty()) return
         val key = Crypto.sha256Hex(bytes)
@@ -750,13 +761,13 @@ class NodeSession(
                     val bytes = vault.read(tag, m.image) ?: run { onNotice("That photo is no longer stored. Pick it again."); return@launch }
                     dismiss(m.id)
                     vault.save(tag, newId, bytes)
-                    sendMedia(newId, KIND_IMAGE, bytes, m.imgW, m.imgH, 0L)
+                    sendMedia(newId, KIND_IMAGE, bytes, m.imgW, m.imgH, 0L, m.dm)
                 }
                 m.voice != null -> {
                     val bytes = synchronized(voices) { voices[m.voice] } ?: run { onNotice("That voice note is gone. Record it again."); return@launch }
                     dismiss(m.id)
                     rememberVoice(newId, bytes)
-                    sendMedia(newId, KIND_VOICE, bytes, 0, 0, m.durMs)
+                    sendMedia(newId, KIND_VOICE, bytes, 0, 0, m.durMs, m.dm)
                 }
                 m.video != null -> {
                     val tmp = File(app.cacheDir, "vout_$newId.mp4")
@@ -770,8 +781,8 @@ class NodeSession(
                         vault.saveFrom(tag, videoKey(newId), tmp)
                         thumb?.let { vault.save(tag, thumbKey(newId), it) }
                         val ts = System.currentTimeMillis()
-                        add(Msg(newId, myId, room.value.name, "", ts, imgW = m.imgW, imgH = m.imgH, durMs = m.durMs, video = newId))
-                        sendVideoFile(newId, ts, tmp, VideoUtil.Info(m.durMs, m.imgW, m.imgH, thumb))
+                        add(Msg(newId, myId, room.value.name, "", ts, imgW = m.imgW, imgH = m.imgH, durMs = m.durMs, video = newId, dm = m.dm))
+                        sendVideoFile(newId, ts, tmp, VideoUtil.Info(m.durMs, m.imgW, m.imgH, thumb), m.dm)
                     } finally {
                         tmp.delete()
                     }
@@ -793,6 +804,37 @@ class NodeSession(
     /** Invite for this node; includes the host's fingerprint when we know who the host is. */
     fun invite(): Invite = Invite(room.value.code, room.value.password, hostId.value)
 
+    /** Turn the internet link on or off for this node without restarting. */
+    fun applyInternet(on: Boolean) { (transport as? MultiTransport)?.setInternet(on) }
+
+    data class LinkInfo(
+        val onWifi: Boolean, val addresses: List<String>, val port: Int,
+        val lanFound: Int, val lanLinked: Int, val lanStuck: Int, val discoveryError: Int?, val advertiseError: Int?,
+        val internetOn: Boolean, val relays: Int, val netLinked: Int
+    )
+
+    /** Everything the Link diagnostics screen shows. Safe to call often. */
+    fun linkInfo(): LinkInfo {
+        val mt = transport as? MultiTransport
+        val lan = mt?.lan
+        val lanLinked = connected.value.count { lan?.isConnected(it) == true }
+        return LinkInfo(
+            onWifi = lan?.onWifi() ?: false, addresses = lan?.localAddresses() ?: emptyList(), port = lan?.port() ?: 0,
+            lanFound = lan?.found() ?: 0, lanLinked = lanLinked, lanStuck = ((lan?.stuck() ?: emptySet()) - connected.value).size,
+            discoveryError = lan?.discoveryError, advertiseError = lan?.advertiseError,
+            internetOn = mt?.internetOn() ?: false, relays = mt?.relays() ?: -1, netLinked = mt?.netLinked() ?: 0
+        )
+    }
+
+    /** Link to another phone by the address shown on its diagnostics screen (e.g. 192.168.1.23:41234). */
+    suspend fun linkByAddress(text: String): Boolean {
+        val m = Regex("^\\s*([0-9]{1,3}(?:\\.[0-9]{1,3}){3})(?::([0-9]{1,5}))?\\s*$").find(text) ?: return false
+        val host = m.groupValues[1]
+        val port = m.groupValues[2].toIntOrNull() ?: (transport as? MultiTransport)?.lan?.port() ?: return false
+        if (port !in 1..65535) return false
+        return (transport as? MultiTransport)?.lan?.dialManual(host, port) ?: false
+    }
+
     /** Relays this phone is connected to for this node (-1 if the internet link is off). */
     fun relayCount(): Int = (transport as? MultiTransport)?.relays() ?: 0
 
@@ -813,7 +855,35 @@ class NodeSession(
     // when you leave the node or the app is fully closed, and are never written to history.
     // Videos are written piece by piece to a private temporary file while arriving (they can be large).
 
-    private class Assembly(val header: JSONObject, val hashes: List<String>, val file: File?) {
+    /** How a private item is delivered: the recipient, which link(s) to send on, and the item's own key. */
+    private class Seal(val to: String, val pub: ByteArray, val via: Set<String>, val key: SecretKey)
+
+    /** Private media goes straight to the recipient, or through the one operative who relays for us. */
+    private fun sealFor(to: String): Seal? {
+        val pub = eks[to] ?: return null
+        val via = if (to in connected.value) setOf(to) else chosenRelay(myId, to)?.let { setOf(it) } ?: return null
+        val k = ByteArray(32).also { SecureRandom().nextBytes(it) }
+        return Seal(to, pub, via, SecretKeySpec(k, "AES"))
+    }
+
+    /** Each private piece is encrypted with the item's key; the IV comes from the piece number (the key is used once). */
+    private fun sealPiece(key: SecretKey, id: String, i: Int, part: ByteArray): ByteArray {
+        val iv = ByteArray(12)
+        for (b in 0 until 4) iv[8 + b] = (i ushr (24 - 8 * b)).toByte()
+        val c = Cipher.getInstance("AES/GCM/NoPadding")
+        c.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(128, iv))
+        c.updateAAD("dmc|$id|$i".toByteArray())
+        return iv + c.doFinal(part)
+    }
+
+    private fun out(seal: Seal?, frame: ByteArray) {
+        if (seal == null) transport?.sendBlocking(frame) else transport?.sendToBlocking(seal.via, frame)
+    }
+
+    private fun cantReach(to: String) =
+        onNotice("Can't reach ${people.label(to, known.value[to] ?: "them")} privately right now. Tap Retry once they're linked.")
+
+    private class Assembly(val header: JSONObject, val hashes: List<String>, val file: File?, val key: SecretKey? = null) {
         val chunks = ConcurrentHashMap<Int, ByteArray>()     // photos and voice notes: pieces in memory
         val got = ConcurrentHashMap.newKeySet<Int>()          // which pieces have arrived
         val raf: RandomAccessFile? = file?.let { RandomAccessFile(it, "rw") }
@@ -881,7 +951,7 @@ class NodeSession(
         assemblies.clear()
     }
 
-    fun sendPhoto(uri: Uri, q: Quality = Quality.STANDARD) {
+    fun sendPhoto(uri: Uri, q: Quality = Quality.STANDARD, dmTo: String? = null) {
         scope.launch(Dispatchers.IO) {
             val res = if (q == Quality.ORIGINAL) ImageUtil.original(app, uri)
                       else ImageUtil.compress(app, uri, q.photoSide, q.photoTarget)
@@ -892,11 +962,11 @@ class NodeSession(
             }
             val id = UUID.randomUUID().toString()
             vault.save(tag, id, res.bytes)
-            sendMedia(id, KIND_IMAGE, res.bytes, res.w, res.h, 0L)
+            sendMedia(id, KIND_IMAGE, res.bytes, res.w, res.h, 0L, dmTo)
         }
     }
 
-    fun sendVoice(bytes: ByteArray, durMs: Long) {
+    fun sendVoice(bytes: ByteArray, durMs: Long, dmTo: String? = null) {
         if (bytes.isEmpty() || bytes.size > MAX_MEDIA) {
             onNotice("That voice note is too large to send.")
             return
@@ -904,11 +974,11 @@ class NodeSession(
         scope.launch(Dispatchers.IO) {
             val id = UUID.randomUUID().toString()
             rememberVoice(id, bytes)
-            sendMedia(id, KIND_VOICE, bytes, 0, 0, durMs)
+            sendMedia(id, KIND_VOICE, bytes, 0, 0, durMs, dmTo)
         }
     }
 
-    fun sendVideo(uri: Uri, q: Quality = Quality.STANDARD) {
+    fun sendVideo(uri: Uri, q: Quality = Quality.STANDARD, dmTo: String? = null) {
         val r = room.value
         scope.launch(Dispatchers.IO) {
             val info = VideoUtil.probe(app, uri)
@@ -925,7 +995,7 @@ class NodeSession(
             coroutineContext[Job]?.let { jobs[id] = it }
             info.thumb?.let { vault.save(tag, thumbKey(id), it) }
             preparing.update { it + (id to 0f) }
-            add(Msg(id, myId, r.name, "", ts, imgW = info.w, imgH = info.h, durMs = info.durMs, video = id))
+            add(Msg(id, myId, r.name, "", ts, imgW = info.w, imgH = info.h, durMs = info.durMs, video = id, dm = dmTo))
 
             val out = File(app.cacheDir, "vout_$id.mp4")
             val ok = try {
@@ -944,7 +1014,7 @@ class NodeSession(
             }
             try {
                 vault.saveFrom(tag, videoKey(id), out)
-                sendVideoFile(id, ts, out, info)
+                sendVideoFile(id, ts, out, info, dmTo)
             } finally {
                 out.delete()
                 jobs.remove(id)
@@ -956,42 +1026,58 @@ class NodeSession(
 
     private fun header(
         id: String, ts: Long, kind: String, size: Int, hashes: List<String>,
-        w: Int, h: Int, dur: Long, thumb: ByteArray?
+        w0: Int, h0: Int, dur0: Long, thumb0: ByteArray?, seal: Seal? = null
     ): ByteArray {
         val r = room.value
         val chunks = hashes.size
         val listHash = Crypto.sha256Hex(hashes.joinToString(",").toByteArray())
+        // Private items: size, length, preview and the item key travel sealed to the recipient
+        var w = w0; var h = h0; var dur = dur0; var thumb = thumb0
+        var tail = ""
+        var e = ""; var c = ""
+        if (seal != null) {
+            val meta = JSONObject().put("mk", b64(seal.key.encoded)).put("w", w).put("h", h).put("dur", dur)
+            thumb?.let { meta.put("thumb", b64(it)) }
+            val (eph, ct) = Crypto.wrapFor(seal.pub, seal.to, meta.toString().toByteArray(), "dmm|$tag|$id".toByteArray())
+            e = b64(eph); c = b64(ct)
+            w = 0; h = 0; dur = 0L; thumb = null
+            tail = "|${seal.to}|${Crypto.sha256Hex((e + c).toByteArray())}"
+        }
         val th = thumb?.let { Crypto.sha256Hex(it) } ?: ""
-        val sig = Identity.sign("media|$tag|$id|$myId|$ts|$kind|$size|$chunks|$listHash|$w|$h|$dur|$th".toByteArray())
+        val sig = Identity.sign("media|$tag|$id|$myId|$ts|$kind|$size|$chunks|$listHash|$w|$h|$dur|$th$tail".toByteArray())
         val j = JSONObject().put("type", "media").put("id", id).put("sid", myId).put("n", r.name)
             .put("ts", ts).put("k", kind).put("size", size).put("chunks", chunks)
             .put("hashes", JSONArray(hashes)).put("w", w).put("h", h).put("dur", dur).put("th", th)
             .put("pk", b64(myPub)).put("sig", b64(sig))
         if (thumb != null) j.put("thumb", b64(thumb))
+        if (seal != null) j.put("to", seal.to).put("e", e).put("c", c)
         return j.toString().toByteArray()
     }
 
     private fun piece(id: String, i: Int, part: ByteArray): ByteArray =
         JSONObject().put("type", "mc").put("id", id).put("i", i).put("d", b64(part)).toString().toByteArray()
 
-    private suspend fun sendMedia(id: String, kind: String, bytes: ByteArray, w: Int, h: Int, dur: Long) {
+    private suspend fun sendMedia(id: String, kind: String, bytes: ByteArray, w: Int, h: Int, dur: Long, dmTo: String? = null) {
         val r = room.value
         val ts = System.currentTimeMillis()
         val chunks = (bytes.size + CHUNK - 1) / CHUNK
-        val hashes = (0 until chunks).map { i ->
-            pieceHash(bytes.copyOfRange(i * CHUNK, minOf((i + 1) * CHUNK, bytes.size)))
-        }
         setProgress(id, 0f)
         add(
-            if (kind == KIND_IMAGE) Msg(id, myId, r.name, "", ts, image = id, imgW = w, imgH = h)
-            else Msg(id, myId, r.name, "", ts, voice = id, durMs = dur)
+            if (kind == KIND_IMAGE) Msg(id, myId, r.name, "", ts, image = id, imgW = w, imgH = h, dm = dmTo)
+            else Msg(id, myId, r.name, "", ts, voice = id, durMs = dur, dm = dmTo)
         )
+        val seal = dmTo?.let { sealFor(it) ?: run { setProgress(id, -1f); cantReach(it); return } }
+        fun wire(i: Int): ByteArray {
+            val part = bytes.copyOfRange(i * CHUNK, minOf((i + 1) * CHUNK, bytes.size))
+            return if (seal == null) part else sealPiece(seal.key, id, i, part)
+        }
+        val hashes = (0 until chunks).map { i -> pieceHash(wire(i)) }
         try {
-            transport?.sendBlocking(header(id, ts, kind, bytes.size, hashes, w, h, dur, null))
+            out(seal, header(id, ts, kind, bytes.size, hashes, w, h, dur, null, seal))
             for (i in 0 until chunks) {
                 if (closed) return
                 if (id in cancelled) { setProgress(id, -1f); return }
-                transport?.sendBlocking(piece(id, i, bytes.copyOfRange(i * CHUNK, minOf((i + 1) * CHUNK, bytes.size))))
+                out(seal, piece(id, i, wire(i)))
                 setProgress(id, (i + 1).toFloat() / chunks)
                 if (i % 4 == 3) delay(15)   // let chat messages and heartbeats slip in between
             }
@@ -1001,25 +1087,27 @@ class NodeSession(
         }
     }
 
-    private suspend fun sendVideoFile(id: String, ts: Long, f: File, info: VideoUtil.Info) {
+    private suspend fun sendVideoFile(id: String, ts: Long, f: File, info: VideoUtil.Info, dmTo: String? = null) {
         val size = f.length().toInt()
         val chunks = (size + CHUNK - 1) / CHUNK
         val buf = ByteArray(CHUNK)
+        val seal = dmTo?.let { sealFor(it) ?: run { setProgress(id, -1f); cantReach(it); return } }
         fun readPiece(raf: RandomAccessFile, i: Int): ByteArray {
             val len = minOf(CHUNK, size - i * CHUNK)
             raf.seek(i.toLong() * CHUNK)
             raf.readFully(buf, 0, len)
-            return buf.copyOf(len)
+            val part = buf.copyOf(len)
+            return if (seal == null) part else sealPiece(seal.key, id, i, part)
         }
         setProgress(id, 0f)
         try {
             val hashes = RandomAccessFile(f, "r").use { raf -> (0 until chunks).map { pieceHash(readPiece(raf, it)) } }
-            transport?.sendBlocking(header(id, ts, KIND_VIDEO, size, hashes, info.w, info.h, info.durMs, info.thumb))
+            out(seal, header(id, ts, KIND_VIDEO, size, hashes, info.w, info.h, info.durMs, info.thumb, seal))
             RandomAccessFile(f, "r").use { raf ->
                 for (i in 0 until chunks) {
                     if (closed) return
                     if (id in cancelled) { setProgress(id, -1f); return }
-                    transport?.sendBlocking(piece(id, i, readPiece(raf, i)))
+                    out(seal, piece(id, i, readPiece(raf, i)))
                     setProgress(id, (i + 1).toFloat() / chunks)
                     if (i % 4 == 3) delay(15)
                 }
@@ -1035,8 +1123,12 @@ class NodeSession(
         if (isBanned(sid) || sid == myId) return
         val id = j.getString("id"); val n = j.getString("n"); val ts = j.getLong("ts")
         val kind = j.getString("k"); val size = j.getInt("size"); val chunks = j.getInt("chunks")
-        val w = j.optInt("w", 0); val h = j.optInt("h", 0); val dur = j.optLong("dur", 0L)
+        var w = j.optInt("w", 0); var h = j.optInt("h", 0); var dur = j.optLong("dur", 0L)
         val th = j.optString("th", "")
+        val to = j.optString("to", "")
+        val e = j.optString("e", ""); val c = j.optString("c", "")
+        if (to.isNotEmpty() && (to.length != 32 || c.length > 600_000)) return
+        val tail = if (to.isEmpty()) "" else "|$to|${Crypto.sha256Hex((e + c).toByteArray())}"
         val limit = when (kind) {
             KIND_IMAGE -> ImageUtil.MAX_ORIGINAL
             KIND_VOICE -> MAX_MEDIA
@@ -1049,13 +1141,32 @@ class NodeSession(
         if (arr.length() != chunks) return
         val hashes = (0 until chunks).map { arr.getString(it) }
         val listHash = Crypto.sha256Hex(hashes.joinToString(",").toByteArray())
-        if (!verified(j, "media|$tag|$id|$sid|$ts|$kind|$size|$chunks|$listHash|$w|$h|$dur|$th")) return
+        if (!verified(j, "media|$tag|$id|$sid|$ts|$kind|$size|$chunks|$listHash|$w|$h|$dur|$th$tail")) return
         mediaOrigin[id] = sid
+        if (to.isNotEmpty()) mediaTo[id] = to
+        if (to.isNotEmpty() && to != myId) return          // someone else's private item: a relay just passes it on
         if (synchronized(seen) { seen.contains(id) }) return
 
-        // Video preview picture, checked against the signed fingerprint
+        // Private item: open the sealed details (item key, size, length, preview)
+        var itemKey: SecretKey? = null
         var thumb: ByteArray? = null
-        if (kind == KIND_VIDEO && th.isNotEmpty()) {
+        if (to.isNotEmpty()) {
+            val plain = try {
+                Crypto.unwrap(ecdh.first, Base64.decode(e, Base64.NO_WRAP), myId,
+                    Base64.decode(c, Base64.NO_WRAP), "dmm|$tag|$id".toByteArray())
+            } catch (ex: Exception) { null } ?: return
+            val meta = try { JSONObject(plain.toString(Charsets.UTF_8)) } catch (ex: Exception) { return }
+            val mk = try { Base64.decode(meta.getString("mk"), Base64.NO_WRAP) } catch (ex: Exception) { return }
+            if (mk.size != 32) return
+            itemKey = SecretKeySpec(mk, "AES")
+            w = meta.optInt("w", 0); h = meta.optInt("h", 0); dur = meta.optLong("dur", 0L)
+            if (kind == KIND_VIDEO && dur > MAX_VIDEO_MS + 999) return
+            if (kind == KIND_VIDEO) thumb = meta.optString("thumb", "").takeIf { it.isNotEmpty() && it.length <= 300_000 }
+                ?.let { runCatching { Base64.decode(it, Base64.NO_WRAP) }.getOrNull() }
+        }
+
+        // Video preview picture, checked against the signed fingerprint
+        if (to.isEmpty() && kind == KIND_VIDEO && th.isNotEmpty()) {
             val t = j.optString("thumb", "")
             if (t.length > 300_000) return
             thumb = try { Base64.decode(t, Base64.NO_WRAP) } catch (e: Exception) { return }
@@ -1066,18 +1177,19 @@ class NodeSession(
         if (assemblies.size >= MAX_ASSEMBLIES) return
         // Videos and large (original) photos are assembled on disk rather than in memory
         val file = if (kind == KIND_VIDEO || size > MAX_MEDIA) File(app.cacheDir, "vin_$id.part") else null
-        val a = try { Assembly(j, hashes, file) } catch (e: Exception) { return }
+        val a = try { Assembly(j, hashes, file, itemKey) } catch (ex: Exception) { return }
         if (assemblies.putIfAbsent(id, a) != null) { a.discard(); return }
         people.seen(sid, n)
         val shown = people.alias(sid, n)
         known.update { it + (sid to shown) }
         setProgress(id, 0f)
+        val dm = if (to.isNotEmpty()) sid else null
         when (kind) {
-            KIND_IMAGE -> add(Msg(id, sid, shown, "", ts, image = id, imgW = w, imgH = h))
-            KIND_VOICE -> add(Msg(id, sid, shown, "", ts, voice = id, durMs = dur))
+            KIND_IMAGE -> add(Msg(id, sid, shown, "", ts, image = id, imgW = w, imgH = h, dm = dm))
+            KIND_VOICE -> add(Msg(id, sid, shown, "", ts, voice = id, durMs = dur, dm = dm))
             else -> {
                 thumb?.let { tb -> scope.launch(Dispatchers.IO) { vault.save(tag, thumbKey(id), tb) } }
-                add(Msg(id, sid, shown, "", ts, imgW = w, imgH = h, durMs = dur, video = id))
+                add(Msg(id, sid, shown, "", ts, imgW = w, imgH = h, durMs = dur, video = id, dm = dm))
             }
         }
     }
@@ -1089,19 +1201,22 @@ class NodeSession(
         if (a.got.contains(i)) return
         val bytes = try { Base64.decode(d, Base64.NO_WRAP) } catch (e: Exception) { return }
         if (pieceHash(bytes) != a.hashes[i]) return      // junk piece: ignore it and keep waiting for the real one
+        val k = a.key
+        val data = if (k == null) bytes else Crypto.decrypt(k, bytes, "dmc|$id|$i".toByteArray()) ?: return
+        if (data.size != minOf(CHUNK, a.header.getInt("size") - i * CHUNK)) return
         synchronized(a) {
             if (a.done || !a.got.add(i)) return
             val raf = a.raf
             if (raf != null) {
                 try {
                     raf.seek(i.toLong() * CHUNK)
-                    raf.write(bytes)
+                    raf.write(data)
                 } catch (e: Exception) {
                     a.got.remove(i)
                     return
                 }
             } else {
-                a.chunks[i] = bytes
+                a.chunks[i] = data
             }
         }
         a.lastActivity = System.currentTimeMillis()
@@ -1134,9 +1249,15 @@ class NodeSession(
                 }
                 setProgress(id, null)
                 pendingDelivered.add(id)
-                if (!(AppState.foreground && viewing(tag))) unread.update { it + 1 }
-                if (!AppState.foreground) {
-                    Notifier.message(app, displayName(), n, when (kind) {
+                val from = hd.getString("sid")
+                val isPrivate = hd.optString("to").isNotEmpty()
+                val onScreen = AppState.foreground && viewing(tag) && (!isPrivate || viewingDm == from)
+                if (!onScreen) {
+                    unread.update { it + 1 }
+                    if (isPrivate) dmUnread.update { it + (from to ((it[from] ?: 0) + 1)) }
+                }
+                if (!AppState.foreground && !muted.value) {
+                    Notifier.message(app, displayName(), if (isPrivate) "$n · PRIVATE" else n, when (kind) {
                         KIND_IMAGE -> "IMG · Photo"
                         KIND_VIDEO -> "VID · Video"
                         else -> "VOX · Voice note"

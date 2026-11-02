@@ -1,6 +1,8 @@
 package com.cybertxts.app
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
@@ -10,6 +12,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.DataInputStream
 import java.io.DataOutputStream
+import java.net.Inet4Address
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -41,6 +44,12 @@ class LanTransport(context: Context) : Transport {
     private val ring = CopyOnWriteArrayList<Pair<String, SecretKey>>()   // (kid, key), newest first
     @Volatile private var graceUntil = 0L
 
+    // ---- diagnostics ----
+    private val foundAt = ConcurrentHashMap<String, Long>()          // peer id -> when mDNS first found it
+    @Volatile var discoveryError: Int? = null; private set           // NSD failure code, if any
+    @Volatile var advertiseError: Int? = null; private set
+    private val manual = ConcurrentHashMap.newKeySet<String>()      // "host:port" being dialled by hand
+
     private lateinit var selfId: String
     private lateinit var prefix: String
     private lateinit var onFrame: (ByteArray) -> Unit
@@ -68,7 +77,9 @@ class LanTransport(context: Context) : Transport {
         ring.add(kid to key)
 
         lock = wifi.createMulticastLock("cybertxts").apply { setReferenceCounted(false); acquire() }
-        val ss = ServerSocket(0).also { server = it }
+        // A steady port per node (so an address typed by hand keeps working), random if it's taken
+        val preferred = 41000 + (roomTag.hashCode() and 0x7fffffff) % 8000
+        val ss = (runCatching { ServerSocket(preferred) }.getOrNull() ?: ServerSocket(0)).also { server = it }
 
         // Accept incoming connections
         scope.launch {
@@ -85,8 +96,8 @@ class LanTransport(context: Context) : Transport {
             port = ss.localPort
         }
         regL = object : NsdManager.RegistrationListener {
-            override fun onServiceRegistered(i: NsdServiceInfo) {}
-            override fun onRegistrationFailed(i: NsdServiceInfo, e: Int) {}
+            override fun onServiceRegistered(i: NsdServiceInfo) { advertiseError = null }
+            override fun onRegistrationFailed(i: NsdServiceInfo, e: Int) { advertiseError = e }
             override fun onServiceUnregistered(i: NsdServiceInfo) {}
             override fun onUnregistrationFailed(i: NsdServiceInfo, e: Int) {}
         }
@@ -94,16 +105,16 @@ class LanTransport(context: Context) : Transport {
 
         // Discover others in the same room
         discL = object : NsdManager.DiscoveryListener {
-            override fun onDiscoveryStarted(t: String) {}
+            override fun onDiscoveryStarted(t: String) { discoveryError = null }
             override fun onDiscoveryStopped(t: String) {}
-            override fun onStartDiscoveryFailed(t: String, e: Int) {}
+            override fun onStartDiscoveryFailed(t: String, e: Int) { discoveryError = e }
             override fun onStopDiscoveryFailed(t: String, e: Int) {}
             override fun onServiceFound(i: NsdServiceInfo) {
                 val id = peerIdOf(i.serviceName) ?: return
                 if (id != selfId && !banned.contains(id)) resolveQueue.trySend(i)
             }
             override fun onServiceLost(i: NsdServiceInfo) {
-                peerIdOf(i.serviceName)?.let { known.remove(it) }
+                peerIdOf(i.serviceName)?.let { known.remove(it); foundAt.remove(it) }
             }
         }
         nsd.discoverServices(TYPE, NsdManager.PROTOCOL_DNS_SD, discL)
@@ -125,6 +136,7 @@ class LanTransport(context: Context) : Transport {
                 @Suppress("DEPRECATION")
                 val host = r.host?.hostAddress ?: continue
                 known[id] = host to r.port
+                foundAt.putIfAbsent(id, System.currentTimeMillis())
                 if (selfId < id && dialing.add(id)) launch { dialLoop(id) }
             }
         }
@@ -292,6 +304,78 @@ class LanTransport(context: Context) : Transport {
     }
 
     fun isConnected(id: String) = conns.containsKey(id)
+
+    override fun sendToBlocking(ids: Set<String>, frame: ByteArray) {
+        val targets = conns.filterKeys { it in ids }.values
+        if (targets.isEmpty()) return
+        val enc = Crypto.encrypt(ring[0].second, frame)
+        targets.forEach { c -> runCatching { c.send(enc) }.onFailure { runCatching { c.socket.close() } } }
+    }
+
+    // ---------- Diagnostics and linking by address ----------
+
+    /** Port this node listens on (shown so another phone can link by address). */
+    fun port(): Int = server?.localPort ?: 0
+
+    /** Phones in this node that WiFi discovery found. */
+    fun found(): Int = known.size
+
+    /** Found on WiFi for 20 s or more but still not linked: the router is probably blocking phone-to-phone traffic. */
+    fun stuck(): Set<String> {
+        val cutoff = System.currentTimeMillis() - 20_000
+        return known.keys.filter { it !in conns && (foundAt[it] ?: Long.MAX_VALUE) < cutoff }.toSet()
+    }
+
+    /** True when this phone is on WiFi (or Ethernet) right now. */
+    fun onWifi(): Boolean = runCatching {
+        val cm = app.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        cm.allNetworks.any { n ->
+            val c = cm.getNetworkCapabilities(n)
+            c != null && (c.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || c.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET))
+        }
+    }.getOrDefault(false)
+
+    /** This phone's local IPv4 addresses on WiFi / Ethernet, e.g. 192.168.1.23 */
+    fun localAddresses(): List<String> = runCatching {
+        val cm = app.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        cm.allNetworks.flatMap { n ->
+            val c = cm.getNetworkCapabilities(n)
+            val local = c != null && (c.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || c.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET))
+            if (!local) emptyList() else cm.getLinkProperties(n)?.linkAddresses
+                ?.mapNotNull { (it.address as? Inet4Address)?.hostAddress } ?: emptyList()
+        }.distinct()
+    }.getOrDefault(emptyList())
+
+    /**
+     * Link to a phone by its address (as shown on its Link diagnostics screen), for networks where discovery
+     * doesn't work. Returns false if nothing answered. If it answers, the link is kept up and re-dialled.
+     */
+    suspend fun dialManual(host: String, port: Int): Boolean = withContext(Dispatchers.IO) {
+        val key = "$host:$port"
+        val first = Socket()
+        try {
+            first.connect(InetSocketAddress(host, port), 4000)
+        } catch (e: Exception) {
+            runCatching { first.close() }
+            return@withContext false
+        }
+        if (manual.add(key)) {
+            scope.launch {
+                var s: Socket? = first
+                var fails = 0
+                while (isActive && fails < 5) {
+                    val sock = s ?: try {
+                        Socket().also { it.connect(InetSocketAddress(host, port), 4000) }
+                    } catch (e: Exception) { null }
+                    s = null
+                    if (sock == null) fails++ else { fails = 0; handshake(sock) }   // blocks while linked
+                    delay(4000)
+                }
+                manual.remove(key)
+            }
+        } else runCatching { first.close() }
+        true
+    }
 
     override fun sendTo(ids: Set<String>, frame: ByteArray) {
         val targets = conns.filterKeys { it in ids }.values

@@ -459,6 +459,14 @@ class InternetTransport(context: Context, private val skip: (String) -> Boolean)
     }
 
     fun isLinked(id: String) = links.containsKey(id)
+    fun linkedCount(): Int = links.size
+
+    override fun sendToBlocking(ids: Set<String>, frame: ByteArray) {
+        val targets = links.values.filter { it.peerId in ids }
+        if (targets.isEmpty()) return
+        val enc = Crypto.encrypt(ring[0].second, frame)
+        kotlinx.coroutines.runBlocking { targets.forEach { it.sendPaced(enc) } }
+    }
 
     override fun sendTo(ids: Set<String>, frame: ByteArray) {
         val targets = links.values.filter { it.peerId in ids }
@@ -487,12 +495,23 @@ class InternetTransport(context: Context, private val skip: (String) -> Boolean)
  * WiFi + internet together. A node keeps both running; peers on the same WiFi talk locally,
  * everyone else over the internet. The chat layer sees one combined set of linked operatives.
  */
-class MultiTransport(context: Context, internet: Boolean) : Transport {
-    private val lan = LanTransport(context)
-    private val net: InternetTransport? = if (internet) InternetTransport(context) { lan.isConnected(it) } else null
+class MultiTransport(private val context: Context, internet: Boolean) : Transport {
+    val lan = LanTransport(context)
+    @Volatile private var net: InternetTransport? = if (internet) newNet() else null
     @Volatile private var lanPeers: Set<String> = emptySet()
     @Volatile private var netPeers: Set<String> = emptySet()
     private lateinit var onPeers: (Set<String>) -> Unit
+
+    // Remembered so the internet link can be switched on later without restarting the node
+    private lateinit var selfId: String
+    private lateinit var roomTag: String
+    private lateinit var onFrame: (ByteArray) -> Unit
+    private lateinit var rescue: (String, String) -> ByteArray?
+    @Volatile private var current: Pair<String, SecretKey>? = null
+    private val legacy = java.util.concurrent.CopyOnWriteArrayList<Pair<String, SecretKey>>()
+    private val bans = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    private fun newNet() = InternetTransport(context) { lan.isConnected(it) }
 
     override fun start(
         selfId: String, roomTag: String, kid: String, key: SecretKey,
@@ -500,9 +519,28 @@ class MultiTransport(context: Context, internet: Boolean) : Transport {
         rescue: (String, String) -> ByteArray?
     ) {
         this.onPeers = onPeers
+        this.selfId = selfId; this.roomTag = roomTag; this.onFrame = onFrame; this.rescue = rescue
+        current = kid to key
         lan.start(selfId, roomTag, kid, key, onFrame, { lanPeers = it; emit() }, rescue)
         net?.start(selfId, roomTag, kid, key, onFrame, { netPeers = it; emit() }, rescue)
     }
+
+    /** Switch the internet link on or off live. WiFi links are untouched. */
+    @Synchronized fun setInternet(on: Boolean) {
+        val cur = current ?: return
+        if (on && net == null) {
+            val n = newNet()
+            bans.forEach { n.ban(it) }
+            n.start(selfId, roomTag, cur.first, cur.second, onFrame, { netPeers = it; emit() }, rescue)
+            legacy.forEach { n.addLegacyKey(it.first, it.second) }
+            net = n
+        } else if (!on && net != null) {
+            net?.stop(); net = null
+            netPeers = emptySet(); emit()
+        }
+    }
+    fun internetOn(): Boolean = net != null
+    fun netLinked(): Int = net?.linkedCount() ?: 0
 
     @Synchronized private fun emit() = onPeers(lanPeers + netPeers)
 
@@ -524,9 +562,23 @@ class MultiTransport(context: Context, internet: Boolean) : Transport {
         if (viaLan.isNotEmpty()) lan.sendTo(viaLan, frame)
         if (viaNet.isNotEmpty()) net?.sendTo(viaNet, frame)
     }
-    override fun rekey(kid: String, key: SecretKey) { lan.rekey(kid, key); net?.rekey(kid, key) }
-    override fun addLegacyKey(kid: String, key: SecretKey) { lan.addLegacyKey(kid, key); net?.addLegacyKey(kid, key) }
-    override fun ban(id: String) { lan.ban(id); net?.ban(id) }
+    override fun sendToBlocking(ids: Set<String>, frame: ByteArray) {
+        val viaLan = ids.filter { lan.isConnected(it) }.toSet()
+        val viaNet = ids - viaLan
+        count(frame, ids.size)
+        if (viaLan.isNotEmpty()) lan.sendToBlocking(viaLan, frame)
+        if (viaNet.isNotEmpty()) net?.sendToBlocking(viaNet, frame)
+    }
+    override fun rekey(kid: String, key: SecretKey) {
+        current?.let { legacy.add(0, it) }
+        current = kid to key
+        lan.rekey(kid, key); net?.rekey(kid, key)
+    }
+    override fun addLegacyKey(kid: String, key: SecretKey) {
+        if (legacy.none { it.first == kid }) legacy.add(kid to key)
+        lan.addLegacyKey(kid, key); net?.addLegacyKey(kid, key)
+    }
+    override fun ban(id: String) { bans.add(id); lan.ban(id); net?.ban(id) }
     override fun stop() { lan.stop(); net?.stop() }
 
     fun relays(): Int = net?.relayCount() ?: -1
