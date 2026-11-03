@@ -2,6 +2,13 @@
 
 Each release's notes are the section under its version number. The Release workflow copies them onto the GitHub release.
 
+## 1.1.1
+
+Fixes from testing 1.1.0 on phones.
+
+- **End call (and every bottom button on full-screen pages) is no longer hidden behind the phone's home / back / app buttons.** Some phones don't tell full-screen pages how big the navigation bar is; CyberTxTs now takes the size from the main screen instead.
+- **VOX voice notes start on more phones.** The recorder tries several setups in turn instead of giving up after one, and says why if the microphone really can't start (in use by a call, another app, or microphone access switched off).
+
 ## 1.1.0
 
 Sound and music.

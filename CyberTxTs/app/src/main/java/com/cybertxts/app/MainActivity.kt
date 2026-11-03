@@ -900,7 +900,7 @@ fun ChatScreen(
         VoicePlayer.stop()
         AudioPlayer.pause()
         if (recorder.start()) { recording = true; recMs = 0L }
-        else Toast.makeText(ctx, "Couldn't start the microphone", Toast.LENGTH_SHORT).show()
+        else Toast.makeText(ctx, recorder.lastError ?: "Couldn't start the microphone", Toast.LENGTH_LONG).show()
     }
     fun finishRecording(send: Boolean) {
         if (!recording) return
@@ -1706,7 +1706,7 @@ fun PhotoViewer(vm: NodeSession, m: Msg, onClose: () -> Unit) {
             vm.readImage(m)?.let { ImageUtil.decodeSampled(it, 2048)?.asImageBitmap() }
         }
     }
-    FullScreenDialog(onDismiss = onClose, darkBars = true) {
+    FullScreenDialog(onDismiss = onClose, darkBars = true, fill = Color.Black) {
         Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.95f)).safeDrawingPadding()) {
             val b = bmp
             if (b != null) {
@@ -1854,7 +1854,7 @@ fun VideoViewer(vm: NodeSession, m: Msg, onClose: () -> Unit) {
     }
     DisposableEffect(Unit) { onDispose { tmp.delete() } }
 
-    FullScreenDialog(onDismiss = onClose, darkBars = true) {
+    FullScreenDialog(onDismiss = onClose, darkBars = true, fill = Color.Black) {
         Box(Modifier.fillMaxSize().background(Color.Black).safeDrawingPadding()) {
             when (ready) {
                 null -> CircularProgressIndicator(color = Holo.Primary, modifier = Modifier.align(Alignment.Center))

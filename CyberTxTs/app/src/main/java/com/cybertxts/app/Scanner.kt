@@ -257,7 +257,7 @@ fun ScanQrScreen(
     LaunchedEffect(Unit) { if (!hasCamera) { AppLock.holdOpen(); permission.launch(Manifest.permission.CAMERA) } }
     LaunchedEffect(warning) { if (warning != null) { delay(2600); warning = null } }
 
-    FullScreenDialog(onDismiss = onClose, darkBars = true) {
+    FullScreenDialog(onDismiss = onClose, darkBars = true, fill = ScanVoid) {
         Box(Modifier.fillMaxSize().background(ScanVoid)) {
             if (hasCamera) CameraFeed(torch = torch, closeUp = closeUp, view = camView,
                 onCloseUpSupport = { canCloseUp = it }, onText = { handle(it, fromGallery = false) })

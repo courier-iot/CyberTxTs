@@ -9,6 +9,18 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.union
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.foundation.shape.CutCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -252,10 +264,13 @@ fun Starfield(modifier: Modifier = Modifier) {
 }
 
 /**
- * A dialog that covers the whole screen and is told the real size of the system bars, so content
- * padded with safeDrawingPadding() stays clear of the status bar, camera notch, keyboard and the
- * phone's home / back / app buttons. A plain full-width Dialog gets no bar sizes on many phones,
- * which put the call buttons (and other bottom rows) underneath the navigation bar.
+ * A dialog that covers the whole screen and keeps its content clear of the status bar, camera notch,
+ * keyboard and the phone's home / back / app buttons.
+ *
+ * Content inside pads itself with safeDrawingPadding(). On many phones a dialog's own window is never told
+ * the system bar sizes, so that padding comes out as zero and bottom buttons end up under the navigation bar.
+ * So we also read the sizes from the app's main window (which always gets them) and add whatever the
+ * dialog's window is missing, side by side, so nothing is ever padded twice.
  */
 @Composable
 fun FullScreenDialog(
@@ -263,8 +278,14 @@ fun FullScreenDialog(
     secure: Boolean = false,
     dismissOnBack: Boolean = true,
     darkBars: Boolean = Holo.isDark,
+    fill: Color = Holo.Void,
     content: @Composable () -> Unit
 ) {
+    val density = LocalDensity.current
+    val dir = LocalLayoutDirection.current
+    val outer = WindowInsets.safeDrawing.union(WindowInsets.navigationBars).union(WindowInsets.statusBars)
+    val oTop = outer.getTop(density); val oBottom = outer.getBottom(density)
+    val oLeft = outer.getLeft(density, dir); val oRight = outer.getRight(density, dir)
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(
@@ -284,6 +305,15 @@ fun FullScreenDialog(
                 }
             }
         }
-        content()
+        val inner = WindowInsets.safeDrawing
+        val pad = with(density) {
+            PaddingValues(
+                start = (if (dir == LayoutDirection.Ltr) oLeft - inner.getLeft(density, dir) else oRight - inner.getRight(density, dir)).coerceAtLeast(0).toDp(),
+                top = (oTop - inner.getTop(density)).coerceAtLeast(0).toDp(),
+                end = (if (dir == LayoutDirection.Ltr) oRight - inner.getRight(density, dir) else oLeft - inner.getLeft(density, dir)).coerceAtLeast(0).toDp(),
+                bottom = (oBottom - inner.getBottom(density)).coerceAtLeast(0).toDp()
+            )
+        }
+        Box(Modifier.fillMaxSize().background(fill).padding(pad)) { content() }
     }
 }

@@ -336,20 +336,48 @@ class VoiceRecorder(private val ctx: Context) {
     private var file: File? = null
     private var startedAt = 0L
 
-    @Suppress("DEPRECATION")
+    /** Why the last start() failed, in plain words (null after a successful start). */
+    var lastError: String? = null; private set
+
+    /**
+     * Start recording. Phones differ in what their recorder accepts, so this tries a few safe setups in turn
+     * (44.1 kHz first, which every phone supports, then lower rates and the voice-recognition mic).
+     */
     fun start(): Boolean {
+        cancel()
+        lastError = null
+        val am = ctx.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+        val setups = listOf(
+            Triple(MediaRecorder.AudioSource.MIC, 44_100, 64_000),
+            Triple(MediaRecorder.AudioSource.MIC, 16_000, 32_000),
+            Triple(MediaRecorder.AudioSource.VOICE_RECOGNITION, 44_100, 64_000),
+            Triple(MediaRecorder.AudioSource.DEFAULT, 22_050, 32_000)
+        )
+        for ((source, rate, bits) in setups) {
+            if (tryStart(source, rate, bits)) return true
+        }
+        val busy = runCatching { am?.activeRecordingConfigurations?.isNotEmpty() == true }.getOrDefault(false)
+        val inCall = am?.mode == android.media.AudioManager.MODE_IN_COMMUNICATION || am?.mode == android.media.AudioManager.MODE_IN_CALL
+        lastError = if (inCall) "The microphone is in use by a call. Hang up first."
+                    else if (busy) "Another app is using the microphone right now. Close it and try again."
+                    else "This phone wouldn't start the microphone. Check that microphone access is on in your quick settings."
+        return false
+    }
+
+    @Suppress("DEPRECATION")
+    private fun tryStart(source: Int, rate: Int, bits: Int): Boolean {
         cancel()
         return try {
             val f = File.createTempFile("vn", ".m4a", ctx.cacheDir)
             val r = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(ctx) else MediaRecorder()
             file = f
             rec = r
-            r.setAudioSource(MediaRecorder.AudioSource.MIC)
+            r.setAudioSource(source)
             r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
             r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
             r.setAudioChannels(1)
-            r.setAudioSamplingRate(22050)
-            r.setAudioEncodingBitRate(32000)
+            r.setAudioSamplingRate(rate)
+            r.setAudioEncodingBitRate(bits)
             r.setOutputFile(f.absolutePath)
             r.prepare()
             r.start()
