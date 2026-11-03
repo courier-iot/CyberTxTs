@@ -1,112 +1,259 @@
-# Stellarite Apps
+<p align="center">
+  <img src=".github/assets/cybertxts-icon.png" width="128" alt="CyberTxTs icon: a chat-bubble planet with a crimson orbit">
+</p>
 
-A personal app store for Android. It lists the modules (apps) published in a GitHub account's releases, shows each repo's README, then downloads and installs the APKs. Debug/test build only, no Play Store or release signing.
+<h1 align="center">CyberTxTs</h1>
 
-> This code has not been compiled yet. Expect a few small fixes on the first Gradle sync.
+<p align="center">
+  <b>Private messaging that doesn't run through anyone's servers.</b><br>
+  By Stellarite · Android 8 and newer · No accounts, no phone number, no Google
+</p>
 
-## Run it
+<p align="center">
+  <a href="https://github.com/courier-iot/CyberTxTs/releases/latest"><b>⬇ Download the latest release</b></a>
+</p>
 
-1. Open `StellariteApps/` in Android Studio (Koala or newer). It will sync Gradle and create the wrapper scripts.
-2. `DEFAULT_OWNER` in `app/src/main/java/com/stellarite/apps/Config.kt` is set to `courier-iot`. This is the built-in catalog every user sees first; change it there if the account ever moves.
-3. Run the `app` configuration on a device or emulator (Android 8.0+).
-4. The first time you install something, Android asks you to allow installs from Stellarite Apps. Control Core shows the clearance state.
+---
 
-## What shows up in the catalog
+CyberTxTs is a messenger for small groups and one-to-one chats where **your phones talk straight to each other**. On the same WiFi they link directly. Anywhere else they find each other over the internet and still link directly. There is no CyberTxTs server holding your messages, your contacts or your account, because there isn't one.
 
-A repo appears when it is not a fork or archived, and its **latest release** has an `.apk` asset. Pre-releases and drafts are skipped. If a release has several APKs, one named `universal` or `release` is preferred.
+Everything is **end-to-end encrypted and signed**: texts, photos, videos, voice notes and calls. Only the people in the chat can read it, and nobody can fake a message from you.
 
-Tag your releases with the app's `versionName` (`v1.2.0` or `1.2.0` both work). Update detection compares the installed `versionName` against the latest tag. The status line reads `SYNCED · up-to-date/total MODULES`.
+You don't sign up. You open the app, pick a **callsign** (your name in CyberTxTs), and you're ready.
 
-## Sources
+## Get it
 
-Besides the built-in **Home Archive** (shown as "Made by The Courier"), Control Core > Sources lets you paste a link:
+1. On your Android phone, open the [latest release](https://github.com/courier-iot/CyberTxTs/releases/latest) and tap **CyberTxTs-x.y.z.apk** under *Assets*.
+2. Open the downloaded file. The first time, Android asks you to allow installs from your browser or files app. Allow it, then go back.
+3. Tap **Install**. Future versions install over the top and keep everything.
 
-- `github.com/owner` adds every qualifying repo of an account or org.
-- `github.com/owner/repo` adds one repo.
-- **Stars** adds your starred repos (first 100; needs an Access Key).
-- An F-Droid-style repo address (F-Droid, IzzyOnDroid, others) opens that archive (see Archives): only the apps you tick join the catalog.
+Every release is signed with the same certificate, and its fingerprint is printed in the release notes. If a download ever shows a different one, don't install it.
 
-Sources can be switched off or removed, are included in Backup Vault snapshots, and are covered by Auto-Patch. F-Droid downloads are verified against the SHA-256 in the index, and your Access Key is only ever sent to api.github.com.
+## Start in a minute
 
-## Downloads and alerts
+1. **Pick your callsign.** It's permanent, so choose one you like.
+2. **Spin up a node** (a group chat), or **link to a node** someone shared with you by scanning their QR code.
+3. **Invite people**: open the node, tap **INVITE**, and let them scan the QR code or send them the link.
 
-- **Wi-Fi only downloads** (on by default): installers and archive indexes wait until you're on an unmetered connection. A held download shows WAITING FOR WI-FI with a DOWNLOAD ANYWAY button, and starts by itself when Wi-Fi returns. Background updates also wait for Wi-Fi. App details follow the same rule. Screenshots have their own switch (on by default): off means they always load.
-- **Update alerts** (on by default): when a module isn't patched automatically, a notification lists the updates (once per set of updates, not every check). Nothing installs on its own.
-- **No release yet:** Repos in your account that look like Android projects (Kotlin or Java, tagged `android` or `stellarite`, or with no language detected yet) and have no APK release show as greyed tiles ("In development"), only when no search or filter is active.
-- **F-Droid app pages:** description, categories, anti-features, screenshots, version history and license come from the verified index.
+That's it. Anyone in the node can now chat, send media and see who's online.
 
-## Suggested
+---
 
-Under your modules on the Catalog page, a Suggested section offers the official F-Droid app. Its build comes from F-Droid's own signed index (the same checks as Archives), then goes to Android's installer; the button becomes OPEN, or UPDATE when a newer version exists. The home page never downloads the large index by surprise: until it has been synced once, the card shows INSTALL without a version, and on mobile data you are asked before the download. If F-Droid is already on the device (even from before Stellarite Apps), it moves out of Suggested into your module list, shows as Installed, and offers UPDATE when F-Droid's public API lists a newer version; the update itself still comes from the verified index. After that it is patched by Auto-Patch like any other module. The section is hidden while searching or filtering.
+## The everyday features
 
-## Archives
+### 💬 Nodes: group chats
+A **node** is a group chat of up to 25 people that lives only on its members' phones. You can be in several at once and switch between them from the **≡** menu. The person who spins it up is the **host** and can remove people. If the host is away, the others can vote someone out.
 
-The ARCHIVES tab lists large open-source repositories. F-Droid is built in; any F-Droid-style source you add also appears. Opening one gives the whole index A to Z with sticky letters and a letter rail, search, app icons, and filters: fits this device (CPU and Android version), hide anti-features, category, updated, and sort. Tick apps and tap ADD to put them in your catalog.
+### 👤 Contacts: one-to-one chats
+**Contacts** are private chats with one person, no group needed. Add someone by scanning each other's QR codes in person (marked **✓ VERIFIED**), from a node you share, or by sending a contact link. Messages you send while they're offline wait and send themselves later.
 
-On first open (or when the daily cache expires) the index is downloaded once. On mobile data you are asked first. The index is checked against the repository's signed `entry.jar` before use: F-Droid's signing key is built into the app; for other repos the key is remembered the first time and a change is refused. A repo with no signature file is usable but shown as UNSIGNED.
+### 📷 Photos, videos and voice notes
+- **IMG**: photos in four qualities. *Original* keeps full quality and strips the location.
+- **VID**: videos up to 5 minutes.
+- **VOX**: voice notes up to 2 minutes. They're never saved.
 
-## Module detail and README
+You can see progress while sending, and cancel or retry.
 
-Under the release notes, the detail screen pulls the repo's README live from GitHub and renders it (headings, lists, code, quotes, tables, links). Images and raw HTML are skipped, relative links point at the repo, and long READMEs are trimmed with an "Open full README on GitHub" button.
+### 📞 Voice and video calls
+Call any contact from their chat or contact card. Calls are encrypted end to end and keep going if you lock your screen or switch apps. There are buttons for mute, speaker, camera and flip, plus Mute and Hang up in the notification.
 
-## Control Core (settings)
+### ✨ Chat extras
+- **Replies, reactions, edit and retract** (retract removes a message for everyone)
+- **✓ sent · ✓✓ delivered · READ** marks, and a typing signal (you can turn both off)
+- **@mentions**, **pins**, **polls** and **forwarding**
+- **Search** one chat or everything
+- **Disappearing messages**: 1 hour, 1 day or 1 week
+- **Drafts** stay put; **schedule** a message for later
+- **Media gallery** for every photo and video in a chat
 
-- **Uplink**: Operator Handle (GitHub username) and Access Key (token). Blank handle, no key = the built-in catalog. Another handle = that account's public releases. A token = the owner's own repos, including private ones. Unauthenticated requests are limited to 60/hour per device; a token raises that. The token stays in the app's private storage.
-- **Visor Skin**: Stellarite Cyber (graphite, cyan, crimson alerts) or Brassworks Steampunk (leather, brass, copper, serif type).
-- **Auto-Patch Protocol**: master switch.
-  - ON: every module patches itself except those you untick in the Patch Roster.
-  - OFF: the Patch Roster opens so you can tick the few modules that should still patch themselves.
-- **Deployment Core**: Deploy Clearance (install permission) and Payload Cache purge.
-- **Commit & Sync** saves the Uplink fields and reloads the catalog.
+### 🔔 Notifications
+Alerts play the **comm chirp** sound. You can reply, mark read or mute right from the notification. Message text is always hidden on the lock screen, and you can hide it everywhere.
 
-## Backup Vault
+### 🔒 App lock
+Lock CyberTxTs with a PIN, fingerprint or face. While it's on, the app is hidden in the app switcher and screenshots are blocked.
 
-Control Core has a **Backup Vault** panel that records which modules (and versions) you have installed, plus your skin and Patch Roster, so you can restore them on another device. It never stores your Access Key or any app data.
+### 🎨 Looks
+**Holo Glass** design with **Night ops** (deep space, neon cyan and crimson), **Day shift** or *match your phone*. Spoken labels and large touch targets make it work well with TalkBack.
 
-- **File target:** SNAPSHOT NOW saves `stellarite-snapshot.json` through the system file picker (Drive, Syncthing, USB, NAS, anywhere). RESTORE opens a file you pick. No account or server involved.
-- **GitHub target:** snapshots go to `snapshot.json` in a private repo named `stellarite-backup` in the account that owns your Access Key. Every save is a commit, so you get history for free. Auto-Snapshot saves after installs, removals, skin and roster changes.
-- Each device only rewrites its own section of the file, so two devices never overwrite each other. Restore lets you pick which device's snapshot to use.
-- **Restore** shows each module as MISSING, INSTALLED or "HAS vX" and ticks what needs restoring. "As recorded" installs the exact recorded release (found by its tag); "Latest" installs the newest release. Android still asks you to confirm each install, and Deploy Clearance must be granted first.
+### 🧳 Don't lose yourself
+Because there's no server, **your phone is your account**. Set one of these up early:
+- **Recovery phrase**: 16 words you write down (Settings › Security).
+- **Encrypted backup file**: a `.ctxb` file locked with your passphrase (Settings › Backup & devices).
+- **Move to a new phone**: scan a QR code and everything moves over WiFi.
 
-### Access Key permissions for GitHub backup
+---
 
-The one thing the GitHub target strictly needs is **Contents read and write on the `stellarite-backup` repo**.
+## Words you'll see
 
-- Safest: create an empty private repo named `stellarite-backup` yourself (tick "Add a README"), then use a fine-grained token limited to that repo with Contents read and write. (A token that also lists your repos for the catalog needs read access to those too.)
-- Easiest: a classic token with the `repo` scope also lets the app create the repo for you on the first snapshot.
-- If the app can't create the repo with your key, it says so and tells you to create it by hand. I could not confirm from GitHub's docs whether fine-grained tokens are allowed to create personal repos, so treat creation as a convenience, not something to rely on.
+| In CyberTxTs | Means |
+|---|---|
+| **Node** | A group chat |
+| **Spin up / Link to node** | Create a group / join a group |
+| **Operative** | A person in a node |
+| **Callsign** | Your permanent name |
+| **OP-ID** | The short code after a name (`VEGA//7F3A`) that tells two Vegas apart |
+| **Access key** | The secret that keeps a node private. Whoever has it can join |
+| **Unlink** | Leave a node |
+| **IMG / VID / VOX** | Photo / video / voice note |
+| **TX / RX** | Sending / receiving |
 
-Known limits: Android will not install an older version over a newer one, so "as recorded" can't downgrade a module. Only modules installed through Stellarite Apps are recorded.
+---
 
-## About other people's repositories
+## Advanced features in depth
 
-Stellarite Apps was made mainly as a launcher for its maker's own apps. It is not an app store replacement.
+<details open>
+<summary><b>How phones find and reach each other</b></summary>
 
-The F-Droid app repository belongs to the F-Droid project, and IzzyOnDroid's belongs to its maintainer. Stellarite Apps does not host, copy or change their apps. It only gives you a way into their public indexes from one place and downloads the APKs from their servers, checking signatures and checksums as described above. It is independent software and is not made by, affiliated with or endorsed by F-Droid or IzzyOnDroid. If you would rather use their official app, get F-Droid from https://f-droid.org.
+CyberTxTs tries several routes and uses the best one:
 
-Stellarite Apps can install any APK from any source you add. It does not review third-party apps, so only add sources you trust. The software is provided as is, without warranty (see LICENSE).
+1. **Same WiFi:** phones announce themselves on the local network (mDNS) and open direct, encrypted connections. This is fastest, and nothing leaves your network.
+2. **Internet:** phones meet through four public **Nostr relays**. These are ordinary public message boards, not CyberTxTs servers. Each node posts only encrypted notes under a *hash* of its code, so a relay can't tell which node it is, who's in it or what's said. Once two phones have found each other, they connect **directly** with WebRTC, using Cloudflare's STUN service only to learn their public address. Your messages never sit on the relay.
+3. **Relaying:** if two people can't connect directly (strict routers, mobile networks), someone linked to both forwards their traffic. It stays signed and encrypted, so the relaying phone can't read or change it. You can turn this off in Settings › Network.
 
-## Auto-Patch details
+**When it won't link:** ⋮ › **LINK DIAGNOSTICS** checks your WiFi, address, discovery and relays and explains the fix in plain words. A red **ROUTER BLOCKING** banner means your WiFi stops devices from talking to each other (common on guest and hotel networks). **Link by address** lets you type another phone's address when discovery doesn't work.
 
-A background job runs about every 6 hours on a network connection. Installs go through Android's PackageInstaller, so on Android 12+ updates to apps this store originally installed can complete without a prompt. Where Android still requires confirmation (older versions, or a first install), you get a notification to tap. Enabling Auto-Patch asks for notification permission on Android 13+.
+**Trade-off:** a direct internet link means the people you link with can see your IP address. Turn off **Internet link** in Settings › Network to stay WiFi-only.
+</details>
 
-## How the Access Key is stored
+<details>
+<summary><b>Encryption, identity and signatures</b></summary>
 
-The key is encrypted with an AES-GCM key held in the Android Keystore and saved in its own file, which is excluded from Android backups and device transfers. A key saved in plain text by an earlier version is encrypted the first time it is read. If the Keystore key is ever lost (for example after a restore to a new phone), the app simply asks for the Access Key again. The key is only ever sent to api.github.com.
+- **Your identity** is a key pair created inside your phone's secure hardware (Android Keystore) the first time you open the app. Your OP-ID comes from it, and **every message, reaction, edit, vote and receipt is signed** with it, so nobody can impersonate you or alter what you sent.
+- **Node messages** are encrypted with AES-GCM using a key derived from the node's access key, which is never sent in the clear.
+- **Fingerprints:** every operative card shows a 32-character fingerprint. Compare it in person to be certain who you're talking to.
+- **Look-alike warning:** if a *new* ID shows up using the callsign of someone you already know, everyone sees **⚠ NEW OPERATIVE · NOT THE VEGA YOU KNOW**, with both fingerprints.
+- **Host verification:** QR invites and links carry the host's fingerprint, so after you join from one, no other phone can pretend to be host (**★ HOST · VERIFIED**).
+- **Removing someone:** the host can remove anyone. Without the host, a majority vote (at least 2 yes) does it. Either way, **the access key rotates automatically** for everyone who's left, including phones that were offline, and the removed person can't read anything new. If two phones rotate at the same instant, all phones agree on the same winner, so the node can't split.
+- **Host handover:** the host can pass the role on (Operatives › HOST). Moving phones carries it over automatically.
+</details>
 
-## Known limits
+<details>
+<summary><b>Private channels</b></summary>
 
-- An app is only recognised as installed after it has been installed through Stellarite Apps once (the package name is read from the downloaded APK).
-- Updates only install over apps signed with the same key.
-- F-Droid modules cannot be downgraded. Index signature checking uses Android's JAR verifier; if a repo signs with an algorithm Android refuses, the sync fails rather than skipping the check.
-- Icons in Archives load from the repository over the network (via Coil).
-- Stars are capped at the first 100.
-- App icons are generic glyphs, since GitHub releases don't carry artwork.
-- Fonts are system fonts (monospace/sans for Cyber, serif for Steampunk); IBM Plex can be bundled later.
+Inside a node, long-press a message › **MESSAGE PRIVATELY** (or **MESSAGE** on a Star Map card) to talk to one person. Each message, photo, video or voice note is **sealed to that person's key**. Other operatives, relays and any phone forwarding it can't open it. **PRIVATE** chips above the chat show your threads and unread counts.
+</details>
 
-## Layout
+<details>
+<summary><b>Catch-up: messages you missed</b></summary>
 
-- `data/` GitHub client, models, installer, local prefs, snapshot model and vault (backup)
-- `patch/` Auto-Patch worker, install result receiver, notifications
-- `ui/` view model, Compose screens (Catalog, Detail, Settings, Patch Roster sheet), Markdown renderer, theme and shared components
-- `MainActivity.kt` navigation between Catalog, Detail and Control Core
+Each phone keeps **a week** of signed messages (private ones stay sealed), along with photo, video and voice-note headers, edits and reactions. When two phones link, they swap whatever the other is missing, exactly as signed, so nothing can be altered on the way. Photos and videos are re-sent from storage.
+
+**Privacy guards:** newcomers never receive messages from before they joined, retracted messages are never handed out again, and expired disappearing messages are never redistributed.
+</details>
+
+<details>
+<summary><b>Disappearing messages</b></summary>
+
+⋮ › **DISAPPEARING** sets 1 hour, 1 day or 1 week for a node or contact. The setting is signed and reaches everyone, including phones that were away. When the time is up, messages and their photos and videos are deleted on every phone, and catch-up won't bring them back.
+</details>
+
+<details>
+<summary><b>Original-quality photos and video</b></summary>
+
+- **Photos:** *Original* sends the untouched file with location and other hidden metadata (EXIF GPS, XMP and IPTC) removed.
+- **Video:** choosing *Original* sends everyone a Standard copy straight away and keeps the untouched file (up to 400 MB) on your phone. Others tap **DOWNLOAD ORIGINAL** to fetch it directly from you. Originals are never passed on by relaying phones.
+</details>
+
+<details>
+<summary><b>Contacts in depth</b></summary>
+
+- **In person:** scan each other's code. Both fingerprints are checked, and the contact is marked **✓ VERIFIED**.
+- **From a node:** long-press someone's message › **ADD CONTACT**, or use their Star Map card. They approve it.
+- **By link:** a contact link works once, expires after 7 days, and you approve whoever uses it.
+- **Contact cards** show the fingerprint, verification, a private note and nickname, and remove or block.
+- **Offline:** texts queue and send themselves. Photos and videos wait even across a restart; voice notes wait while the app is open.
+- **Moving phones:** contacts move with you, and follow the other person when *they* move phones.
+</details>
+
+<details>
+<summary><b>Backups, recovery and moving phones</b></summary>
+
+- **Recovery phrase** (Settings › Security): 16 words, shown once and never stored on the phone. On a new phone, **RECOVER WITH PHRASE** proves you're you and can **lock the old phone out** of every node: it's removed and the keys rotate.
+- **Encrypted backup** (Settings › Backup & devices): a `.ctxb` file locked with your passphrase. It holds your nodes, access keys, contacts and settings. Restoring it on a fresh install brings you back as yourself, optionally locking out the old phone.
+- **Move to a new phone:** on the new phone choose **MOVE FROM MY OLD PHONE**, then scan its QR code with the old one. Everything (and optionally your message log) moves over the same WiFi, signed by the old phone, and the old phone then offers to erase itself. Operatives keep your nickname, private channels and host role.
+
+Backups are switched off at the Android level on purpose, so a restored system backup can never clone your identity onto another phone.
+</details>
+
+<details>
+<summary><b>App lock details</b></summary>
+
+- **PIN** of 4 to 8 digits, with optional fingerprint or face unlock and a lock delay you choose.
+- **Privacy screen:** the app is hidden in the app switcher and screenshots are blocked.
+- After **5 wrong PINs** you have to wait, and the wait grows with each further miss. **Forgot PIN?** offers to erase the app.
+- Notification action buttons are hidden while the lock is on. An ongoing call stays reachable on top of the lock screen.
+</details>
+
+<details>
+<summary><b>Star Map and Constellation</b></summary>
+
+Every node has **CHAT** and **STAR MAP** tabs.
+- **MY LINKS** puts you in the centre with everyone around you. A solid cyan line is WiFi, dashed crimson is internet, and dotted means relayed or only seen. It also shows the delay in milliseconds, pulses when data moves, and totals for links, data sent and received, and relays.
+- **FULL MESH** shows every link between everyone, with amber warnings for pairs that can't connect directly.
+- **Tap anyone** for their card: route, delay, time linked, data, other shared nodes, and nickname, remove or vote out.
+- **Constellation** (≡ menu) draws all your nodes as star systems, with people you share shown as bridges. It's built only from what your phone knows and is never shared.
+</details>
+
+<details>
+<summary><b>Battery and data</b></summary>
+
+Settings › **Battery & data** shows how fast your battery drains per hour while unplugged, a 24-hour battery chart, CyberTxTs' own processor time, data used on WiFi and mobile, and open links. It adds tips and a shortcut to Android's battery page. **Hold link in background** keeps you reachable with the screen off, at some battery cost.
+</details>
+
+<details>
+<summary><b>What anyone outside your chats can see</b></summary>
+
+| Who | What they can see | What they can't |
+|---|---|---|
+| **Public Nostr relays** | That some encrypted notes were posted under a hashed topic, and your IP address when you connect to them | Node codes, names, members, messages, media |
+| **Cloudflare STUN** | Your IP address when a link starts | Anything you send |
+| **A phone relaying for you** | That encrypted traffic passes through | Its contents (and it can't change it) |
+| **People you link with directly over the internet** | Your IP address | Private channels not meant for them |
+| **Your WiFi network** | That two devices are talking | The contents |
+
+No analytics, no ads, no crash reporting, no Google Play Services.
+</details>
+
+<details>
+<summary><b>Limits and good to know</b></summary>
+
+- Up to **25 operatives** per node. Videos up to **5 minutes**, voice notes up to **2 minutes**, original videos up to **400 MB**. Catch-up covers **7 days**.
+- Your message log is **optional** and stored **encrypted on your phone only**, with auto-purge after 7, 30 or 90 days. Photo and video storage can be switched off separately.
+- **No server means no account recovery.** Without a recovery phrase, backup or old phone, a lost phone means a new identity.
+- Android only. Calls are one-to-one for now.
+- Works on phones **without Google services** (QR scanning uses the open-source ZXing library).
+</details>
+
+---
+
+## For developers
+
+<details>
+<summary><b>Building, releasing and the code layout</b></summary>
+
+**Tech:** Kotlin and Jetpack Compose, minSdk 26, targetSdk 35. WebRTC (`stream-webrtc-android`), OkHttp websockets for Nostr, ZXing for QR, Media3 Transformer for video, AndroidX Biometric. Fonts (Orbitron, Rajdhani, Share Tech Mono, all SIL OFL) are downloaded at build time.
+
+**Builds (GitHub Actions):**
+- **Build test APK** runs on every push to `main` and makes **CyberTxTs Dev** (`com.cybertxts.app.dev`). It sits next to the real app, with its own identity.
+- **Release** (Actions › Release › version, or push a tag `v1.2.3`) builds a signed **CyberTxTs** (`com.cybertxts.app`), checks the signature, and publishes the APK, its SHA-256 and the notes from `CyberTxTs/CHANGELOG.md`. Version codes come from the version number, so releases always update cleanly.
+- **Signing:** the `SIGNING_PASSWORD` and `SIGNING_KEYSTORE` repository secrets hold the permanent key (alias `cybertxts`, PKCS12). Never lose them: without them, existing installs can't update.
+
+```
+.github/workflows/      build.yml (test builds), release.yml, make-signing-key.yml
+.github/scripts/        fetch-fonts.sh
+.github/assets/         README images
+CyberTxTs/CHANGELOG.md  release notes, one section per version
+CyberTxTs/app/src/main/java/com/cybertxts/app/
+  CyberApp.kt, ChatViewModel.kt        startup and the one long-lived view model
+  NodeSession.kt                       a node: messages, members, votes, key rotation, media, catch-up
+  LanTransport.kt, InternetTransport.kt, Transport.kt, Nostr.kt   WiFi, WebRTC, relays
+  Crypto.kt, Identity.kt, Account.kt   encryption, signing, recovery, backups, phone moves
+  Contacts.kt, ContactsUI.kt           contacts and direct chats
+  Calls.kt, CallUI.kt                  voice and video calls
+  Media.kt, Storage.kt                 media pipeline, settings, encrypted log
+  MainActivity.kt, AccountScreens.kt, ChatExtras.kt, StarMap.kt, Diagnostics.kt, Scanner.kt, UsageUI.kt
+  Lock.kt, SessionService.kt, Battery.kt, Theme.kt, People.kt, Invite.kt
+```
+</details>
+
+<p align="center"><sub>CyberTxTs · by Stellarite</sub></p>
