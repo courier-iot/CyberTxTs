@@ -439,7 +439,7 @@ fun ConstellationDialog(nodes: List<NodeSession>, onPick: (NodeSession) -> Unit,
     val total = systems.flatMap { it.members }.toSet().size
     val measurer = rememberTextMeasurer()
 
-    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    FullScreenDialog(onDismiss = onClose) {
         Column(Modifier.fillMaxSize().background(Holo.Void).safeDrawingPadding()) {
             Row(
                 Modifier.fillMaxWidth().background(Holo.Panel).padding(start = 4.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),

@@ -4,11 +4,13 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.hardware.Camera
 import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -18,6 +20,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -35,9 +38,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,6 +56,7 @@ import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -79,6 +85,9 @@ import com.google.zxing.qrcode.QRCodeReader
 import com.journeyapps.barcodescanner.BarcodeCallback
 import com.journeyapps.barcodescanner.BarcodeResult
 import com.journeyapps.barcodescanner.BarcodeView
+import com.journeyapps.barcodescanner.CameraPreview
+import com.journeyapps.barcodescanner.camera.AutoFocusManager
+import com.journeyapps.barcodescanner.camera.CameraInstance
 import com.journeyapps.barcodescanner.DefaultDecoderFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -133,6 +142,58 @@ object QrDecode {
 }
 
 /**
+ * Focus help for the live camera. ZXing only refocuses on a 2-second timer, aimed at the whole picture,
+ * so a QR held close often stays blurry. This aims focus (and exposure) at the scan window,
+ * refocuses straight away on a tap, and offers a close-up (macro) mode for codes held near the lens.
+ * Everything runs on ZXing's camera thread; any phone that refuses a setting just keeps the default.
+ */
+private object ScanFocus {
+    /** Middle of the picture, roughly the scan window. Camera coordinates run from -1000 to 1000. */
+    private val centre get() = listOf(Camera.Area(android.graphics.Rect(-300, -300, 300, 300), 1000))
+
+    /** ZXing's autofocus loop for the open camera (pinned to ZXing Android Embedded 4.3.0, no shrinking). */
+    private fun loop(v: BarcodeView): AutoFocusManager? = runCatching {
+        val inst = v.cameraInstance ?: return null
+        val mgr = CameraInstance::class.java.getDeclaredField("cameraManager").apply { isAccessible = true }.get(inst) ?: return null
+        mgr.javaClass.getDeclaredField("autoFocusManager").apply { isAccessible = true }.get(mgr) as? AutoFocusManager
+    }.getOrNull()
+
+    /** Aim focus at the window and pick normal or close-up focus. Call once the preview has started. */
+    fun setUp(v: BarcodeView, closeUp: Boolean) {
+        v.changeCameraParameters { p ->
+            runCatching { loop(v)?.stop() }
+            runCatching {
+                val modes = p.supportedFocusModes.orEmpty()
+                when {
+                    closeUp && Camera.Parameters.FOCUS_MODE_MACRO in modes -> p.focusMode = Camera.Parameters.FOCUS_MODE_MACRO
+                    Camera.Parameters.FOCUS_MODE_AUTO in modes -> p.focusMode = Camera.Parameters.FOCUS_MODE_AUTO
+                }
+                if (p.maxNumFocusAreas > 0) p.focusAreas = centre
+                if (p.maxNumMeteringAreas > 0) p.meteringAreas = centre
+            }
+            p
+        }
+        refocus(v)
+    }
+
+    /** Start a fresh focus pass now instead of waiting for the next timed one. */
+    fun refocus(v: BarcodeView) {
+        v.changeCameraParameters { p ->
+            runCatching { loop(v)?.let { it.stop(); it.start() } }
+            p
+        }
+    }
+
+    fun supportsCloseUp(v: BarcodeView, onResult: (Boolean) -> Unit) {
+        v.changeCameraParameters { p ->
+            val ok = runCatching { Camera.Parameters.FOCUS_MODE_MACRO in p.supportedFocusModes.orEmpty() }.getOrDefault(false)
+            v.post { onResult(ok) }
+            p
+        }
+    }
+}
+
+/**
  * Full-screen scanner. Calls [onInvite] once with the first valid CyberTxTs invite it sees,
  * either from the camera or from a picture picked from the gallery.
  */
@@ -162,6 +223,11 @@ fun ScanQrScreen(
     }
     var asked by remember { mutableStateOf(false) }
     var torch by remember { mutableStateOf(false) }
+    var closeUp by remember { mutableStateOf(false) }
+    var canCloseUp by remember { mutableStateOf(false) }
+    val camView = remember { mutableStateOf<BarcodeView?>(null) }
+    val focusRing = remember { Animatable(0f) }
+    var ringAt by remember { mutableStateOf(Offset.Zero) }
     var warning by remember { mutableStateOf<String?>(null) }
     var done by remember { mutableStateOf(false) }
     var lastBad by remember { mutableStateOf<String?>(null) }
@@ -191,12 +257,36 @@ fun ScanQrScreen(
     LaunchedEffect(Unit) { if (!hasCamera) { AppLock.holdOpen(); permission.launch(Manifest.permission.CAMERA) } }
     LaunchedEffect(warning) { if (warning != null) { delay(2600); warning = null } }
 
-    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+    FullScreenDialog(onDismiss = onClose, darkBars = true) {
         Box(Modifier.fillMaxSize().background(ScanVoid)) {
-            if (hasCamera) CameraFeed(torch = torch, onText = { handle(it, fromGallery = false) })
+            if (hasCamera) CameraFeed(torch = torch, closeUp = closeUp, view = camView,
+                onCloseUpSupport = { canCloseUp = it }, onText = { handle(it, fromGallery = false) })
             else NoCamera(asked = asked, onAsk = { permission.launch(Manifest.permission.CAMERA) })
 
-            if (hasCamera) ScanOverlay()
+            if (hasCamera) {
+                ScanOverlay()
+                // Tap anywhere on the picture to refocus. A ring shows where you tapped.
+                Box(
+                    Modifier.fillMaxSize()
+                        .semantics { contentDescription = "Camera viewfinder. Tap to focus." }
+                        .pointerInput(Unit) {
+                            detectTapGestures { pos ->
+                                camView.value?.let { ScanFocus.refocus(it) }
+                                ringAt = pos
+                                scope.launch { focusRing.snapTo(1f); focusRing.animateTo(0f, tween(900)) }
+                            }
+                        }
+                ) {
+                    Canvas(Modifier.fillMaxSize()) {
+                        val a = focusRing.value
+                        if (a > 0f) {
+                            val r = (34 + 10 * a).dp.toPx()
+                            drawCircle(ScanCyan.copy(alpha = a), r, ringAt, style = Stroke(2.dp.toPx()))
+                            drawCircle(ScanCyan.copy(alpha = a * 0.6f), 3.dp.toPx(), ringAt)
+                        }
+                    }
+                }
+            }
 
             // Header
             Column(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 20.dp, vertical = 14.dp)) {
@@ -218,9 +308,25 @@ fun ScanQrScreen(
                     fontFamily = Mono, fontSize = 12.sp, letterSpacing = 0.08.em,
                     color = if (w != null) ScanCrimson else ScanInk, textAlign = TextAlign.Center
                 )
+                if (hasCamera && warning == null) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        if (closeUp) "CLOSE-UP ON · HOLD THE QR 5-15 CM AWAY" else "BLURRY? TAP THE SCREEN TO FOCUS",
+                        fontFamily = Mono, fontSize = 11.sp, letterSpacing = 0.08.em, color = ScanDim, textAlign = TextAlign.Center
+                    )
+                }
                 Spacer(Modifier.height(14.dp))
+                if (hasCamera) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        ScanButton(if (torch) "LIGHT ON" else "LIGHT", ScanCyan, Modifier.weight(1f)) { torch = !torch }
+                        ScanButton("FOCUS", ScanCyan, Modifier.weight(1f)) {
+                            camView.value?.let { ScanFocus.refocus(it) }
+                        }
+                        if (canCloseUp) ScanButton(if (closeUp) "CLOSE-UP ON" else "CLOSE-UP", ScanCyan, Modifier.weight(1.3f)) { closeUp = !closeUp }
+                    }
+                    Spacer(Modifier.height(10.dp))
+                }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    if (hasCamera) ScanButton(if (torch) "LIGHT ON" else "LIGHT", ScanCyan, Modifier.weight(1f)) { torch = !torch }
                     ScanButton("FROM GALLERY", ScanCyan, Modifier.weight(1.4f)) {
                         AppLock.holdOpen()
                         gallery.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
@@ -234,13 +340,17 @@ fun ScanQrScreen(
 
 /** The live camera feed. Starts and stops with the screen so the camera is never left running. */
 @Composable
-private fun CameraFeed(torch: Boolean, onText: (String?) -> Unit) {
+private fun CameraFeed(
+    torch: Boolean, closeUp: Boolean, view: MutableState<BarcodeView?>,
+    onCloseUpSupport: (Boolean) -> Unit, onText: (String?) -> Unit
+) {
     val owner = LocalLifecycleOwner.current
     val windowPx = with(LocalDensity.current) { WINDOW_DP.dp.roundToPx() }
-    val view = remember { mutableStateOf<BarcodeView?>(null) }
+    val closeUpNow by rememberUpdatedState(closeUp)
+    val support by rememberUpdatedState(onCloseUpSupport)
 
     AndroidView(
-        modifier = Modifier.fillMaxSize().semantics { contentDescription = "Camera viewfinder" },
+        modifier = Modifier.fillMaxSize(),
         factory = { c ->
             BarcodeView(c).apply {
                 // MIXED_SCAN (2): reads normal and light-on-dark (inverted) QR codes.
@@ -250,11 +360,24 @@ private fun CameraFeed(torch: Boolean, onText: (String?) -> Unit) {
                     override fun barcodeResult(result: BarcodeResult) { onText(result.text) }
                     override fun possibleResultPoints(resultPoints: MutableList<ResultPoint>) {}
                 })
+                // Each time the camera starts (first open, back from another app), aim focus at the window.
+                val self = this
+                addStateListener(object : CameraPreview.StateListener {
+                    override fun previewSized() {}
+                    override fun previewStarted() {
+                        ScanFocus.setUp(self, closeUpNow)
+                        ScanFocus.supportsCloseUp(self) { support(it) }
+                    }
+                    override fun previewStopped() {}
+                    override fun cameraError(error: Exception?) {}
+                    override fun cameraClosed() {}
+                })
                 view.value = this
             }
         }
     )
     LaunchedEffect(torch) { view.value?.setTorch(torch) }
+    LaunchedEffect(closeUp) { view.value?.let { if (it.isPreviewActive) ScanFocus.setUp(it, closeUp) } }
     // Adding the observer while the screen is already open delivers ON_RESUME straight away, which starts the camera.
     val v = view.value
     DisposableEffect(owner, v) {

@@ -16,6 +16,13 @@ import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
+import androidx.compose.ui.window.SecureFlagPolicy
+import androidx.core.view.WindowCompat
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -241,5 +248,42 @@ fun Starfield(modifier: Modifier = Modifier) {
         val oc = Offset(size.width * 0.92f, size.height * 0.27f)
         drawCircle(ring1, radius = 90.dp.toPx(), center = oc, style = Stroke(1f), alpha = 0.14f)
         drawCircle(ring2, radius = 120.dp.toPx(), center = oc, style = Stroke(1f), alpha = 0.07f)
+    }
+}
+
+/**
+ * A dialog that covers the whole screen and is told the real size of the system bars, so content
+ * padded with safeDrawingPadding() stays clear of the status bar, camera notch, keyboard and the
+ * phone's home / back / app buttons. A plain full-width Dialog gets no bar sizes on many phones,
+ * which put the call buttons (and other bottom rows) underneath the navigation bar.
+ */
+@Composable
+fun FullScreenDialog(
+    onDismiss: () -> Unit,
+    secure: Boolean = false,
+    dismissOnBack: Boolean = true,
+    darkBars: Boolean = Holo.isDark,
+    content: @Composable () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false,
+            dismissOnBackPress = dismissOnBack,
+            dismissOnClickOutside = false,
+            securePolicy = if (secure) SecureFlagPolicy.SecureOn else SecureFlagPolicy.Inherit
+        )
+    ) {
+        val view = LocalView.current
+        SideEffect {
+            (view.parent as? DialogWindowProvider)?.window?.let { w ->
+                WindowCompat.getInsetsController(w, w.decorView).apply {
+                    isAppearanceLightStatusBars = !darkBars
+                    isAppearanceLightNavigationBars = !darkBars
+                }
+            }
+        }
+        content()
     }
 }

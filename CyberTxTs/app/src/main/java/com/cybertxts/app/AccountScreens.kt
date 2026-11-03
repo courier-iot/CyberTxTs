@@ -87,13 +87,7 @@ fun ConsolePage(
     title: String, crumb: String? = null, onBack: () -> Unit, secure: Boolean = false,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    Dialog(
-        onDismissRequest = onBack,
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            securePolicy = if (secure) SecureFlagPolicy.SecureOn else SecureFlagPolicy.Inherit
-        )
-    ) {
+    FullScreenDialog(onDismiss = onBack, secure = secure) {
         Column(Modifier.fillMaxSize().background(Holo.Void).safeDrawingPadding()) {
             Row(
                 Modifier.fillMaxWidth().background(Holo.Panel).padding(start = 4.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),

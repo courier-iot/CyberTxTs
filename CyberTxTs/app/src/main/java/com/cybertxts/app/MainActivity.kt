@@ -1663,7 +1663,7 @@ fun PhotoViewer(vm: NodeSession, m: Msg, onClose: () -> Unit) {
             vm.readImage(m)?.let { ImageUtil.decodeSampled(it, 2048)?.asImageBitmap() }
         }
     }
-    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    FullScreenDialog(onDismiss = onClose, darkBars = true) {
         Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.95f)).safeDrawingPadding()) {
             val b = bmp
             if (b != null) {
@@ -1811,7 +1811,7 @@ fun VideoViewer(vm: NodeSession, m: Msg, onClose: () -> Unit) {
     }
     DisposableEffect(Unit) { onDispose { tmp.delete() } }
 
-    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    FullScreenDialog(onDismiss = onClose, darkBars = true) {
         Box(Modifier.fillMaxSize().background(Color.Black).safeDrawingPadding()) {
             when (ready) {
                 null -> CircularProgressIndicator(color = Holo.Primary, modifier = Modifier.align(Alignment.Center))

@@ -2,6 +2,14 @@
 
 Each release's notes are the section under its version number. The Release workflow copies them onto the GitHub release.
 
+## 1.0.1
+
+Fixes for the first round of phone testing.
+
+- **Call buttons can be reached again.** On many phones the Answer, Mute, Speaker and End call buttons sat underneath the home / back / app buttons. Calls (and every other full-screen page: Settings, photo and video viewers, Constellation, the QR scanner) now keep clear of the navigation bar, camera notch and keyboard.
+- **Roomier call controls.** Video calls show two buttons per row (Mute and Speaker, then Camera and Flip camera), and an incoming call puts Decline on its own row so it's hard to hit by mistake.
+- **QR scanner focus.** Focus is now aimed at the scan frame instead of the whole picture. Tap anywhere on the camera picture (or the FOCUS button) to refocus straight away, and use CLOSE-UP on phones that support it for codes held near the lens.
+
 ## 1.0.0
 
 The first full release of CyberTxTs: a private messenger with no accounts, no phone numbers, no servers of its own and no Google services. Phones link straight to each other over WiFi or the internet, and everything is end-to-end encrypted and signed.

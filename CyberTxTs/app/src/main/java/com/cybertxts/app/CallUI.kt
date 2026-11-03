@@ -86,7 +86,7 @@ fun CallOverlay(vm: ChatViewModel) {
         else -> (call.why ?: "CALL ENDED").uppercase()
     }
 
-    Dialog(onDismissRequest = {}, properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnBackPress = false, dismissOnClickOutside = false)) {
+    FullScreenDialog(onDismiss = {}, dismissOnBack = false, darkBars = true) {
         Box(Modifier.fillMaxSize().background(Holo.Void)) {
             val e = engine
             if (call.video && call.remoteVideo && e != null && call.phase != "ended") {
@@ -113,28 +113,31 @@ fun CallOverlay(vm: ChatViewModel) {
                     modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
             }
             Column(
-                Modifier.align(Alignment.BottomCenter).fillMaxWidth().safeDrawingPadding().padding(horizontal = 20.dp, vertical = 28.dp),
+                Modifier.align(Alignment.BottomCenter).fillMaxWidth().safeDrawingPadding().padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 when (call.phase) {
-                    "ringing" -> Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        CallButton("Decline", Holo.Danger, Modifier.weight(1f)) { vm.calls.decline() }
-                        CallButton(if (call.video) "Voice only" else "Answer", Holo.Primary, Modifier.weight(1f), solid = !call.video) {
-                            gate(callPermissions(false)) { vm.calls.accept(false) }
+                    "ringing" -> {
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            CallButton(if (call.video) "Voice only" else "Answer", Holo.Primary, Modifier.weight(1f), solid = !call.video) {
+                                gate(callPermissions(false)) { vm.calls.accept(false) }
+                            }
+                            if (call.video) CallButton("Video", Holo.Primary, Modifier.weight(1f), solid = true) {
+                                gate(callPermissions(true)) { vm.calls.accept(true) }
+                            }
                         }
-                        if (call.video) CallButton("Video", Holo.Primary, Modifier.weight(1f), solid = true) {
-                            gate(callPermissions(true)) { vm.calls.accept(true) }
-                        }
+                        CallButton("Decline", Holo.Danger, Modifier.fillMaxWidth()) { vm.calls.decline() }
                     }
                     "ended" -> {}
                     else -> {
+                        // Two per row, so labels never get squeezed on narrow phones.
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             CallButton(if (call.muted) "Unmute" else "Mute", if (call.muted) Holo.Accent else Holo.Primary, Modifier.weight(1f)) { vm.calls.toggleMute() }
                             CallButton(if (call.speaker) "Earpiece" else "Speaker", Holo.Primary, Modifier.weight(1f)) { vm.calls.toggleSpeaker() }
-                            if (call.video) {
-                                CallButton(if (call.camOn) "Cam off" else "Cam on", Holo.Primary, Modifier.weight(1f)) { vm.calls.toggleCamera() }
-                                CallButton("Flip", Holo.Primary, Modifier.weight(1f)) { vm.calls.switchCamera() }
-                            }
+                        }
+                        if (call.video) Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            CallButton(if (call.camOn) "Camera off" else "Camera on", Holo.Primary, Modifier.weight(1f)) { vm.calls.toggleCamera() }
+                            CallButton("Flip camera", Holo.Primary, Modifier.weight(1f)) { vm.calls.switchCamera() }
                         }
                         CallButton("End call", Holo.Danger, Modifier.fillMaxWidth(), solid = true) { vm.calls.hangUp() }
                     }
