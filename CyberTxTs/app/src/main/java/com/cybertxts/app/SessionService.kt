@@ -80,13 +80,14 @@ object Notifier {
     fun message(ctx: Context, node: String, sender: String, text: String, tag: String = "", dm: String? = null) {
         unread++
         val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        val hidden = NotificationCompat.Builder(ctx, CH_MESSAGES)
+        val ch = Sounds.channelFor(ctx, tag)      // the chat's own alert tone, or the default
+        val hidden = NotificationCompat.Builder(ctx, ch)
             .setSmallIcon(R.drawable.ic_stat_node)
             .setContentTitle("CyberTxTs")
             .setContentText("New message")
             .build()
         val masked = AppState.hideAlertText
-        val n = NotificationCompat.Builder(ctx, CH_MESSAGES)
+        val n = NotificationCompat.Builder(ctx, ch)
             .setSmallIcon(R.drawable.ic_stat_node)
             .setContentTitle(if (masked) "CyberTxTs" else if (unread == 1) "$sender · $node" else "$unread new messages")
             .setContentText(if (masked) (if (unread == 1) "New transmission" else "$unread new transmissions")

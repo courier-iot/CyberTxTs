@@ -243,6 +243,8 @@ class CallManager(
     private var proximity: PowerManager.WakeLock? = null
     @Volatile private var serviceOn = false
     private var shown = ""
+    @Volatile private var lastPhase: String? = null
+    private val livePhases = setOf("calling", "connecting", "active", "reconnecting")
 
     private fun update(f: (CallUi) -> CallUi) { ui.value?.let { ui.value = f(it) } }
 
@@ -268,6 +270,14 @@ class CallManager(
         }
         // Voice call held to the ear: the proximity sensor turns the screen off so your cheek can't tap anything
         setProximity(live && c != null && c.phase == "active" && !c.video && !c.speaker)
+        // Call sounds: ringing at their end while you wait, a tone when it connects and when it ends
+        val p = c?.phase
+        runCatching {
+            Sounds.ringback(app, p == "calling" && c?.incoming == false)
+            if (p == "active" && lastPhase != "active" && lastPhase != "reconnecting") Sounds.callTone(app, "connect")
+            if (lastPhase in livePhases && (p == null || p == "ended")) Sounds.callTone(app, "end")
+        }
+        lastPhase = p
     }
 
     private fun setProximity(on: Boolean) {
@@ -401,7 +411,11 @@ class CallManager(
 
     fun hangUp() { scope.launch { finish(null, signal = true) } }
 
-    fun toggleMute() { val c = ui.value ?: return; engine?.setMuted(!c.muted); update { it.copy(muted = !c.muted) } }
+    fun toggleMute() {
+        val c = ui.value ?: return
+        engine?.setMuted(!c.muted); update { it.copy(muted = !c.muted) }
+        runCatching { Sounds.callTone(app, if (c.muted) "unmute" else "mute") }
+    }
     fun toggleCamera() { val c = ui.value ?: return; engine?.setCamera(!c.camOn); update { it.copy(camOn = !c.camOn) } }
     fun switchCamera() { engine?.switchCamera() }
     fun toggleSpeaker() {
@@ -428,15 +442,9 @@ class CallManager(
 
     // ---- ringing and call notifications ----
 
+    /** Incoming call: your chosen ringtone (looping) and vibration, following silent mode and Do Not Disturb. */
     private fun ring(on: Boolean) {
-        runCatching {
-            if (on) {
-                ringtone = RingtoneManager.getRingtone(app, RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE))?.apply {
-                    audioAttributes = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE).build()
-                    play()
-                }
-            } else { ringtone?.stop(); ringtone = null }
-        }
+        runCatching { if (on) Sounds.startRinging(app) else Sounds.stopRinging() }
     }
 
     private fun channel(nm: NotificationManager) {

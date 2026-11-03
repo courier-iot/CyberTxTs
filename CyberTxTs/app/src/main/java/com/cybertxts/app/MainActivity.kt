@@ -176,12 +176,17 @@ fun AppRoot(vm: ChatViewModel) {
     val nm = name
     val act = active
     val dc = directChat
-    when {
-        nm == null -> NameScreen(vm) { vm.setProfileName(it) }
-        dc != null -> DirectChatRoot(vm, dc)
-        contactsOpen -> ContactsRoot(vm)
-        act == null || showNew -> HomeScreen(vm, nm, canCancel = nodes.isNotEmpty() && act != null) { showNew = false }
-        else -> NodeShell(vm, nodes, act) { showNew = true }
+    Column(Modifier.fillMaxSize()) {
+        NowPlayingBar()      // music keeps playing (and stays controllable) on every screen
+        Box(Modifier.weight(1f)) {
+            when {
+                nm == null -> NameScreen(vm) { vm.setProfileName(it) }
+                dc != null -> DirectChatRoot(vm, dc)
+                contactsOpen -> ContactsRoot(vm)
+                act == null || showNew -> HomeScreen(vm, nm, canCancel = nodes.isNotEmpty() && act != null) { showNew = false }
+                else -> NodeShell(vm, nodes, act) { showNew = true }
+            }
+        }
     }
 
     val pending by vm.pendingInvite.collectAsStateWithLifecycle()
@@ -815,6 +820,7 @@ fun ChatScreen(
     var showTtl by remember { mutableStateOf(false) }
     var showGallery by remember { mutableStateOf(false) }
     var forwardMsg by remember { mutableStateOf<Msg?>(null) }
+    var showTone by remember { mutableStateOf(false) }
     var pinIdx by remember { mutableStateOf(0) }
     var flashId by remember { mutableStateOf<String?>(null) }
     val ttl by vm.ttl.collectAsStateWithLifecycle()
@@ -886,8 +892,13 @@ fun ChatScreen(
         }
     }
 
+    val audioPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) vm.sendAudio(uri, dmPeer)
+    }
+
     fun startRecording() {
         VoicePlayer.stop()
+        AudioPlayer.pause()
         if (recorder.start()) { recording = true; recMs = 0L }
         else Toast.makeText(ctx, "Couldn't start the microphone", Toast.LENGTH_SHORT).show()
     }
@@ -956,6 +967,16 @@ fun ChatScreen(
     if (showGallery) MediaGallery(vm, messages, onPhoto = { openPhoto = it }, onVideo = { openVideo = it }) { showGallery = false }
     val fw = forwardMsg
     if (fw != null) ForwardDialog(vm, fw, forwardTargets()) { forwardMsg = null }
+    if (showTone) ToneDialog(ring = false, current = Sounds.conf.value.perChat[vm.tag], sameAsDefault = true,
+        onPick = { Sounds.setChatTone(vm.tag, it) }) { showTone = false }
+    // Optional quiet sounds when you send, or a message arrives, in the chat on screen
+    var lastHeard by remember(dmPeer) { mutableStateOf(messages.lastOrNull()?.id) }
+    LaunchedEffect(messages.lastOrNull()?.id) {
+        val last = messages.lastOrNull()
+        if (last != null && last.id != lastHeard && !last.system && AppState.foreground &&
+            System.currentTimeMillis() - last.ts < 15_000) Sounds.chat(ctx, sent = last.senderId == vm.myId)
+        lastHeard = last?.id
+    }
     // Search results and pins jump here: switch to the right thread, scroll, flash the bubble
     LaunchedEffect(jump) {
         val id = jump ?: return@LaunchedEffect
@@ -1105,6 +1126,12 @@ fun ChatScreen(
                         onClick = { menuOpen = false; direct.onCard() })
                     if (direct == null) DropdownMenuItem(text = { Text("OPERATIVES (${peers + 1})", fontFamily = Mono) },
                         onClick = { menuOpen = false; showMembers = true })
+                    DropdownMenuItem(text = { Text(if (dmPeer != null) "SEND AUDIO FILE PRIVATELY" else "SEND AUDIO FILE", fontFamily = Mono) },
+                        onClick = {
+                            menuOpen = false
+                            AppLock.holdOpen()
+                            audioPicker.launch(arrayOf("audio/*", "application/ogg"))
+                        })
                     DropdownMenuItem(text = { Text("NEW POLL", fontFamily = Mono) },
                         onClick = { menuOpen = false; showPoll = true })
                     DropdownMenuItem(text = { Text("SCHEDULE MESSAGE", fontFamily = Mono) },
@@ -1115,6 +1142,10 @@ fun ChatScreen(
                         onClick = { menuOpen = false; showGallery = true })
                     DropdownMenuItem(text = { Text("DISAPPEARING: " + ttlLabel(ttl), fontFamily = Mono) },
                         onClick = { menuOpen = false; showTtl = true })
+                    DropdownMenuItem(text = {
+                        val own = Sounds.conf.collectAsStateWithLifecycle().value.perChat[vm.tag]
+                        Text("ALERT TONE: " + (own?.let { Sounds.label(ctx, it, false) } ?: "DEFAULT").uppercase(), fontFamily = Mono)
+                    }, onClick = { menuOpen = false; showTone = true })
                     DropdownMenuItem(text = { Text("LINK DIAGNOSTICS", fontFamily = Mono) },
                         onClick = { menuOpen = false; showDiag = true })
                     DropdownMenuItem(text = { Text(if (mutedNode) "UNMUTE ALERTS" else "MUTE ALERTS", fontFamily = Mono) },
@@ -1247,7 +1278,7 @@ fun ChatScreen(
                 IconTextButton("\u2715", "Close search", Holo.Muted) { searching = false; query = "" }
             }
             val q = query.trim()
-            val hits = if (q.length < 2) emptyList() else messages.filter { !it.deleted && !it.system && it.text.contains(q, ignoreCase = true) }.reversed()
+            val hits = if (q.length < 2) emptyList() else messages.filter { !it.deleted && !it.system && it.matches(q) }.reversed()
             if (q.length >= 2) {
                 MonoLabel(if (hits.isEmpty()) "NO MATCHES" else "${hits.size} MATCH${if (hits.size == 1) "" else "ES"}", Holo.InkDim,
                     modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp))
@@ -1283,6 +1314,7 @@ fun ChatScreen(
                         m.image != null -> " · IMG"
                         m.video != null -> " · VID ${fmtDur(m.durMs)}"
                         m.voice != null -> " · VOX ${fmtDur(m.durMs)}"
+                        m.audio != null -> " · AUD ${fmtDur(m.durMs)}"
                         else -> ""
                     }
                     val showMenu = { menuFor = m.id }
@@ -1346,6 +1378,8 @@ fun ChatScreen(
                                 VideoBubble(vm, m, transfers[m.id], preparing[m.id], mine, onLongClick = showMenu) { openVideo = m }
                             } else if (m.voice != null) {
                                 VoiceBubble(vm, m, transfers[m.id], mine)
+                            } else if (m.audio != null) {
+                                AudioBubble(vm, m, transfers[m.id], mine, onLongClick = showMenu)
                             } else if (m.poll != null) {
                                 PollBubble(vm, m)
                             } else {
@@ -1392,9 +1426,18 @@ fun ChatScreen(
                                     menuFor = null; onAddContact(m.senderId)
                                 })
                             }
-                            if (mine && !m.deleted && m.dm == null && m.text.isNotEmpty() && m.image == null && m.video == null && m.voice == null) {
+                            if (mine && !m.deleted && m.dm == null && m.text.isNotEmpty() && m.image == null && m.video == null && m.voice == null && m.audio == null) {
                                 DropdownMenuItem(text = { Text("EDIT", fontFamily = Mono) }, onClick = {
                                     menuFor = null; editingId = m.id; input = m.text; replyingTo = null
+                                })
+                            }
+                            if (m.audio != null && !m.deleted && Build.VERSION.SDK_INT >= 29) {
+                                DropdownMenuItem(text = { Text("SAVE TO MUSIC", fontFamily = Mono) }, onClick = {
+                                    menuFor = null
+                                    scope.launch {
+                                        val ok = withContext(Dispatchers.IO) { AudioUtil.saveToMusic(ctx, vm, m) }
+                                        Toast.makeText(ctx, if (ok) "Saved to Music/CyberTxTs" else "Couldn't save that audio file", Toast.LENGTH_SHORT).show()
+                                    }
                                 })
                             }
                             if (mine && !m.deleted) {
@@ -1991,6 +2034,7 @@ fun snippet(m: Msg): String = when {
     m.image != null -> "IMG · Photo"
     m.video != null -> "VID · Video"
     m.voice != null -> "VOX · Voice note"
+    m.audio != null -> "AUD · " + m.aTitle.ifBlank { "Audio file" }
     else -> m.text.replace('\n', ' ').take(100)
 }
 

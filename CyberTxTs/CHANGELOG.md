@@ -2,6 +2,31 @@
 
 Each release's notes are the section under its version number. The Release workflow copies them onto the GitHub release.
 
+## 1.1.0
+
+Sound and music.
+
+### Audio files in chats
+- **Send music, podcasts or any audio file** from ⋮ > SEND AUDIO FILE: MP3, M4A, AAC, OGG, Opus, FLAC, WAV and more, up to 100 MB and 4 hours. Files go exactly as picked, with no re-compressing.
+- Each shows its **title, artist, length and type**, with **play / pause and a seek bar**.
+- **Keeps playing** when you scroll, leave the chat or switch screens. A now-playing strip at the top of every screen lets you pause or stop. It pauses for calls, voice notes and other apps, and when headphones are unplugged.
+- Works everywhere photos and videos do: nodes, contacts, private channels (sealed to one person), the offline queue for contacts, catch-up, forwarding, search (by title, artist or file name) and the MEDIA gallery.
+- Long-press > **SAVE TO MUSIC** keeps a copy in your phone's Music/CyberTxTs folder. Settings > Chats & media > **Keep AUD** chooses whether others' audio files stay after a restart.
+
+### Call sounds
+- **Choose your ringtone:** Comm ring (new), Orbit (new), your phone's default, any sound on your phone, or silent. It loops until you answer.
+- **Vibrates** when ringing (can be switched off).
+- **Ringing tone while you wait** for someone to answer, and short tones when a call **connects, ends, or you mute**.
+- **Follows silent mode and Do Not Disturb:** the call screen still appears, quietly.
+
+### App sounds
+- **Choose your message tone** inside the app: Comm chirp, Pulse, Beacon, Sonar, Glint (all new except the chirp), your phone's default, any sound on your phone, or silent.
+- **A different tone for each node or contact:** ⋮ > ALERT TONE in that chat.
+- Optional **quiet sounds inside an open chat** when you send or receive (off by default).
+- All of this lives in Settings > **Sounds & alerts**.
+
+Phones on 1.0.x simply don't show audio files sent from 1.1.0; update everyone together.
+
 ## 1.0.1
 
 Fixes for the first round of phone testing.

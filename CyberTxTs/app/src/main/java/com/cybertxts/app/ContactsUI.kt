@@ -50,6 +50,7 @@ private fun preview(m: Msg?, mine: Boolean): String = when {
     m.image != null -> (if (mine) "You: " else "") + "IMG"
     m.video != null -> (if (mine) "You: " else "") + "VID " + fmtDur(m.durMs)
     m.voice != null -> (if (mine) "You: " else "") + "VOX " + fmtDur(m.durMs)
+    m.audio != null -> (if (mine) "You: " else "") + "AUD " + m.aTitle
     else -> (if (mine) "You: " else "") + m.text
 }
 

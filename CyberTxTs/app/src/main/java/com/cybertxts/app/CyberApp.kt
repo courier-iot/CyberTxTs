@@ -15,6 +15,7 @@ class CyberApp : Application(), ViewModelStoreOwner {
 
     override fun onCreate() {
         super.onCreate()
+        Sounds.init(this)
         Notifier.ensureChannels(this)
     }
 

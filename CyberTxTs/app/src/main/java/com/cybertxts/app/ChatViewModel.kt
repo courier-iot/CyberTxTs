@@ -262,7 +262,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (!s.keepHistory) viewModelScope.launch(Dispatchers.IO) { store.deleteAll() }
     }
 
-    fun eraseAllHistory() { viewModelScope.launch(Dispatchers.IO) { store.deleteAll(); vault.deleteAll() } }
+    fun eraseAllHistory() { AudioPlayer.stop(); viewModelScope.launch(Dispatchers.IO) { store.deleteAll(); vault.deleteAll() } }
 
     fun clearNotice() { notice.value = null }
 

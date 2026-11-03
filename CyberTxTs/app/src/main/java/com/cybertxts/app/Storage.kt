@@ -17,6 +17,7 @@ data class AppSettings(
     val retentionDays: Int = 0,      // 0 = keep forever
     val keepImages: Boolean = true,
     val keepVideos: Boolean = true,
+    val keepAudio: Boolean = true,   // keep received audio files (music etc.) after a restart
     val keepAlive: Boolean = true,   // foreground service: stay connected with the screen off
     val internet: Boolean = true,    // also link over the internet (relays + direct WebRTC), not just WiFi
     val relay: Boolean = true,       // forward frames for operatives who can't link to each other directly
@@ -33,6 +34,7 @@ object SettingsStore {
         retentionDays = p.getInt("s_days", 0),
         keepImages = p.getBoolean("s_img", true),
         keepVideos = p.getBoolean("s_vid", true),
+        keepAudio = p.getBoolean("s_aud", true),
         keepAlive = p.getBoolean("s_keep", true),
         internet = p.getBoolean("s_net", true),
         relay = p.getBoolean("s_relay", true),
@@ -45,7 +47,7 @@ object SettingsStore {
 
     fun save(p: SharedPreferences, s: AppSettings) {
         p.edit().putBoolean("s_hist", s.keepHistory).putInt("s_days", s.retentionDays)
-            .putBoolean("s_img", s.keepImages).putBoolean("s_vid", s.keepVideos).putBoolean("s_keep", s.keepAlive).putBoolean("s_net", s.internet).putBoolean("s_relay", s.relay)
+            .putBoolean("s_img", s.keepImages).putBoolean("s_vid", s.keepVideos).putBoolean("s_aud", s.keepAudio).putBoolean("s_keep", s.keepAlive).putBoolean("s_net", s.internet).putBoolean("s_relay", s.relay)
             .putString("s_q", s.quality).putBoolean("s_ask", s.askQuality)
             .putString("s_theme", s.theme).putBoolean("s_read", s.readMarks).putBoolean("s_typing", s.typingSignal).apply()
     }
@@ -75,6 +77,7 @@ class HistoryStore(context: Context) {
                 .put("vid", m.video ?: "").put("dur", m.durMs).put("re", m.replyTo ?: "")
                 .put("dm", m.dm ?: "").put("ed", m.edited).put("del", m.deleted)
                 .put("pin", m.pinned).put("og", m.og).put("ogh", m.ogHave).put("eda", m.editedAt)
+                .put("aud", m.audio ?: "").put("at", m.aTitle).put("aa", m.aArtist).put("an", m.aName).put("am", m.aMime).put("as", m.aSize)
                 .put("poll", m.poll ?: "").put("pv", JSONObject().apply { m.votes.forEach { (k, v) -> put(k, v) } })
                 .put("rx", JSONObject().apply { m.reactions.forEach { (e, who) -> put(e, JSONArray(who.toList())) } }))
         }
@@ -100,7 +103,10 @@ class HistoryStore(context: Context) {
                     dm = it.optString("dm", "").ifEmpty { null },
                     edited = it.optBoolean("ed", false), deleted = it.optBoolean("del", false),
                     pinned = it.optBoolean("pin", false), og = it.optLong("og", 0L), ogHave = it.optBoolean("ogh", false),
-                    editedAt = it.optLong("eda", 0L), poll = it.optString("poll", "").ifEmpty { null },
+                    editedAt = it.optLong("eda", 0L),
+                    audio = it.optString("aud", "").ifEmpty { null }, aTitle = it.optString("at", ""), aArtist = it.optString("aa", ""),
+                    aName = it.optString("an", ""), aMime = it.optString("am", ""), aSize = it.optLong("as", 0L),
+                    poll = it.optString("poll", "").ifEmpty { null },
                     votes = it.optJSONObject("pv")?.let { o -> o.keys().asSequence().associateWith { k -> o.getString(k) } } ?: emptyMap(),
                     reactions = it.optJSONObject("rx")?.let { o ->
                         o.keys().asSequence().associateWith { e ->

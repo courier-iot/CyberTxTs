@@ -60,8 +60,18 @@ fun TtlDialog(current: Long, onPick: (Long) -> Unit, onClose: () -> Unit) {
 @Composable
 fun MediaGallery(vm: NodeSession, messages: List<Msg>, onPhoto: (Msg) -> Unit, onVideo: (Msg) -> Unit, onClose: () -> Unit) {
     val items = remember(messages) { messages.filter { !it.deleted && (it.image != null || it.video != null) }.reversed() }
-    ConsolePage("MEDIA", "${items.count { it.image != null }} PHOTOS · ${items.count { it.video != null }} VIDEOS", onClose) {
-        if (items.isEmpty()) InfoCard("", "No photos or videos in this chat yet.")
+    val tracks = remember(messages) { messages.filter { !it.deleted && it.audio != null }.reversed() }
+    ConsolePage("MEDIA", "${items.count { it.image != null }} PHOTOS · ${items.count { it.video != null }} VIDEOS · ${tracks.size} AUDIO", onClose) {
+        if (items.isEmpty() && tracks.isEmpty()) InfoCard("", "No photos, videos or audio files in this chat yet.")
+        if (tracks.isNotEmpty()) {
+            MonoLabel("AUDIO FILES", Holo.InkDim, size = 11)
+            tracks.forEach { m ->
+                Box(Modifier.fillMaxWidth().openPanel(Holo.Panel, Holo.Muted.copy(alpha = 0.35f), cut = 8.dp).padding(10.dp)) {
+                    AudioBubble(vm, m, null, m.senderId == vm.myId, onLongClick = {})
+                }
+            }
+            if (items.isNotEmpty()) MonoLabel("PHOTOS & VIDEOS", Holo.InkDim, size = 11)
+        }
         items.chunked(3).forEach { row ->
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 row.forEach { m -> GalleryTile(vm, m, Modifier.weight(1f)) { if (m.image != null) onPhoto(m) else onVideo(m) } }
@@ -125,6 +135,7 @@ fun snippetOf(m: Msg): String = when {
     m.image != null -> "IMG · Photo"
     m.video != null -> "VID · Video " + fmtDur(m.durMs)
     m.voice != null -> "VOX · Voice note " + fmtDur(m.durMs)
+    m.audio != null -> "AUD · " + m.aTitle.ifBlank { "Audio file" } + (if (m.aArtist.isNotBlank()) " · " + m.aArtist else "") + " " + fmtDur(m.durMs)
     else -> m.text
 }
 
@@ -139,7 +150,7 @@ fun GlobalSearchDialog(vm: ChatViewModel, onClose: () -> Unit) {
         delay(200)
         hits = withContext(Dispatchers.Default) {
             vm.allChats().flatMap { (name, s) ->
-                s.messages.value.filter { !it.deleted && !it.system && it.text.contains(q, ignoreCase = true) }.map { Triple(name, s, it) }
+                s.messages.value.filter { !it.deleted && !it.system && it.matches(q) }.map { Triple(name, s, it) }
             }.sortedByDescending { it.third.ts }.take(300)
         }
     }
@@ -293,3 +304,8 @@ fun ScheduledDialog(items: List<NodeSession.Scheduled>, onCancel: (String) -> Un
         confirmButton = { TextButton(onClick = onClose) { Text("CLOSE", fontFamily = Mono, color = Holo.Primary) } }
     )
 }
+
+/** Search match: the text, or an audio file's title, artist or file name. */
+fun Msg.matches(q: String): Boolean =
+    text.contains(q, ignoreCase = true) ||
+        (audio != null && (aTitle.contains(q, ignoreCase = true) || aArtist.contains(q, ignoreCase = true) || aName.contains(q, ignoreCase = true)))

@@ -49,7 +49,10 @@ data class Msg(
     val ogHave: Boolean = false,     // video: this phone holds the original
     val editedAt: Long = 0L,
     val poll: String? = null,        // poll: JSON array of options (text is the question)
-    val votes: Map<String, String> = emptyMap()   // poll: voter id -> "choice:ts"
+    val votes: Map<String, String> = emptyMap(),  // poll: voter id -> "choice:ts"
+    val audio: String? = null,       // audio file (music, podcast...): sent as picked, stored encrypted
+    val aTitle: String = "", val aArtist: String = "", val aName: String = "", val aMime: String = "",
+    val aSize: Long = 0L
 )
 
 /** created = true when this phone built the node (the creator is its host). */
@@ -779,7 +782,7 @@ class NodeSession(
     fun edit(msgId: String, newText: String) {
         val t = newText.trim().ifEmpty { return }.take(4000)
         val m = messages.value.firstOrNull { it.id == msgId } ?: return
-        if (m.senderId != myId || m.dm != null || m.image != null || m.video != null || m.voice != null) return
+        if (m.senderId != myId || m.dm != null || m.image != null || m.video != null || m.voice != null || m.audio != null) return
         applyEdit(msgId, myId, t, false, System.currentTimeMillis())
         sendEdit(msgId, t, false)
     }
@@ -820,7 +823,7 @@ class NodeSession(
             list.map { m ->
                 if (m.id != msgId || m.senderId != who) m else {
                     target = m
-                    if (del) m.copy(text = "", deleted = true, image = null, video = null, voice = null, reactions = emptyMap(), pinned = false)
+                    if (del) m.copy(text = "", deleted = true, image = null, video = null, voice = null, audio = null, reactions = emptyMap(), pinned = false)
                     else if (m.dm == null && !m.deleted && at > m.editedAt) m.copy(text = t, edited = true, editedAt = at) else m
                 }
             }
@@ -831,6 +834,7 @@ class NodeSession(
                 gone.image?.let { vault.deleteItem(tag, it) }
                 gone.video?.let { vault.deleteItem(tag, videoKey(it)); vault.deleteItem(tag, thumbKey(it)); vault.deleteItem(tag, ogKey(it)) }
                 gone.voice?.let { v -> synchronized(voices) { voices.remove(v) } }
+                gone.audio?.let { AudioPlayer.forget(it); vault.deleteItem(tag, audioKey(it)); vault.deleteItem(tag, thumbKey(it)) }
             }
         }
         scheduleSave()
@@ -885,6 +889,24 @@ class NodeSession(
                         val ts = System.currentTimeMillis()
                         add(Msg(newId, myId, room.value.name, "", ts, imgW = m.imgW, imgH = m.imgH, durMs = m.durMs, video = newId, dm = m.dm))
                         sendVideoFile(newId, ts, tmp, VideoUtil.Info(m.durMs, m.imgW, m.imgH, thumb), m.dm)
+                    } finally {
+                        tmp.delete()
+                    }
+                }
+                m.audio != null -> {
+                    val tmp = File(app.cacheDir, "aout_$newId")
+                    if (!vault.decryptTo(tag, audioKey(m.audio), tmp)) {
+                        onNotice("That audio file is no longer stored. Pick it again.")
+                        return@launch
+                    }
+                    val meta = vault.read(tag, thumbKey(m.audio)) ?: AudioMeta.encode(m.aTitle, m.aArtist, m.aName, m.aMime)
+                    dismiss(m.id)
+                    try {
+                        vault.saveFrom(tag, audioKey(newId), tmp)
+                        vault.save(tag, thumbKey(newId), meta)
+                        val ts = System.currentTimeMillis()
+                        add(audioMsg(newId, myId, room.value.name, ts, m.durMs, m.dm, meta, tmp.length()))
+                        sendVideoFile(newId, ts, tmp, VideoUtil.Info(m.durMs, 0, 0, meta), m.dm, kind = KIND_AUDIO)
                     } finally {
                         tmp.delete()
                     }
@@ -1139,6 +1161,7 @@ class NodeSession(
                 m.image?.let { vault.deleteItem(tag, it) }
                 m.video?.let { vault.deleteItem(tag, videoKey(it)); vault.deleteItem(tag, thumbKey(it)); vault.deleteItem(tag, ogKey(it)) }
                 m.voice?.let { v -> synchronized(voices) { voices.remove(v) } }
+                m.audio?.let { AudioPlayer.forget(it); vault.deleteItem(tag, audioKey(it)); vault.deleteItem(tag, thumbKey(it)) }
             }
         }
         scheduleSave(); scheduleLogSave()
@@ -1224,6 +1247,19 @@ class NodeSession(
                     val ts = System.currentTimeMillis()
                     add(Msg(id, myId, room.value.name, "", ts, imgW = m.imgW, imgH = m.imgH, durMs = m.durMs, video = id))
                     sendVideoFile(id, ts, tmp, VideoUtil.Info(m.durMs, m.imgW, m.imgH, thumb))
+                } finally { tmp.delete() }
+            }
+            m.audio != null -> scope.launch(Dispatchers.IO) {
+                val id = UUID.randomUUID().toString()
+                val tmp = File(app.cacheDir, "aout_fwd_$id")
+                try {
+                    if (!src.exportAudio(m, tmp)) { onNotice("That audio file isn't stored on this phone."); return@launch }
+                    val meta = src.readAudioMeta(m) ?: AudioMeta.encode(m.aTitle, m.aArtist, m.aName, m.aMime)
+                    vault.saveFrom(tag, audioKey(id), tmp)
+                    vault.save(tag, thumbKey(id), meta)
+                    val ts = System.currentTimeMillis()
+                    add(audioMsg(id, myId, room.value.name, ts, m.durMs, null, meta, tmp.length()))
+                    sendVideoFile(id, ts, tmp, VideoUtil.Info(m.durMs, 0, 0, meta), kind = KIND_AUDIO)
                 } finally { tmp.delete() }
             }
             m.text.isNotEmpty() -> send(m.text)
@@ -1401,10 +1437,10 @@ class NodeSession(
             }
             return
         }
-        if (kind != KIND_VIDEO) return
+        if (kind != KIND_VIDEO && kind != KIND_AUDIO) return
         val tmp = File(app.cacheDir, "vout_sync_$id.mp4")
         try {
-            if (!vault.decryptTo(tag, videoKey(id), tmp) || tmp.length() != size.toLong()) return
+            if (!vault.decryptTo(tag, if (kind == KIND_AUDIO) audioKey(id) else videoKey(id), tmp) || tmp.length() != size.toLong()) return
             val buf = ByteArray(CHUNK)
             RandomAccessFile(tmp, "r").use { raf ->
                 val chunks = (size + CHUNK - 1) / CHUNK
@@ -1532,6 +1568,15 @@ class NodeSession(
                                 if (vault.decryptTo(tag, videoKey(q.id), tmp)) {
                                     sendVideoFile(q.id, System.currentTimeMillis(), tmp,
                                         VideoUtil.Info(q.dur, q.w, q.h, vault.read(tag, thumbKey(q.id))))
+                                } else setProgress(q.id, -1f)
+                            } finally { tmp.delete() }
+                        }
+                        KIND_AUDIO -> {
+                            val tmp = File(app.cacheDir, "aout_q_${q.id}")
+                            try {
+                                if (vault.decryptTo(tag, audioKey(q.id), tmp)) {
+                                    sendVideoFile(q.id, System.currentTimeMillis(), tmp,
+                                        VideoUtil.Info(q.dur, 0, 0, vault.read(tag, thumbKey(q.id))), kind = KIND_AUDIO)
                                 } else setProgress(q.id, -1f)
                             } finally { tmp.delete() }
                         }
@@ -1664,6 +1709,17 @@ class NodeSession(
     fun hasVideo(m: Msg): Boolean = m.video?.let { vault.exists(tag, videoKey(it)) } ?: false
     fun exportVideo(m: Msg, dest: File): Boolean = m.video?.let { vault.decryptTo(tag, videoKey(it), dest) } ?: false
     fun copyVideo(m: Msg, out: OutputStream): Boolean = m.video?.let { vault.copyTo(tag, videoKey(it), out) } ?: false
+    fun hasAudio(m: Msg): Boolean = m.audio?.let { vault.exists(tag, audioKey(it)) } ?: false
+    fun exportAudio(m: Msg, dest: File): Boolean = m.audio?.let { vault.decryptTo(tag, audioKey(it), dest) } ?: false
+    fun copyAudio(m: Msg, out: OutputStream): Boolean = m.audio?.let { vault.copyTo(tag, audioKey(it), out) } ?: false
+    fun readAudioMeta(m: Msg): ByteArray? = m.audio?.let { vault.read(tag, thumbKey(it)) }
+
+    /** An audio-file message, with title / artist / name / type read from its (signed) details. */
+    private fun audioMsg(id: String, sid: String, name: String, ts: Long, dur: Long, dm: String?, meta: ByteArray?, size: Long): Msg {
+        val (t, a, n, mime) = AudioMeta.decode(meta)
+        return Msg(id, sid, name, "", ts, durMs = dur, dm = dm, audio = id,
+            aTitle = t.ifEmpty { n.substringBeforeLast('.').ifEmpty { "Audio" } }, aArtist = a, aName = n, aMime = mime, aSize = size)
+    }
 
     private fun setProgress(id: String, p: Float?) {
         transfers.update { if (p == null) it - id else it + (id to p) }
@@ -1688,7 +1744,7 @@ class NodeSession(
         val moving = transfers.value
         return messages.value.filter { m ->
             m.voice == null &&
-                !((m.image != null || m.video != null) && m.senderId != myId && moving.containsKey(m.id))
+                !((m.image != null || m.video != null || m.audio != null) && m.senderId != myId && moving.containsKey(m.id))
         }
     }
 
@@ -1697,6 +1753,7 @@ class NodeSession(
         val keep = HashSet<String>()
         if (s.keepImages) list.forEach { m -> m.image?.let { keep.add(it) } }
         if (s.keepVideos) list.forEach { m -> m.video?.let { keep.add(videoKey(it)); keep.add(thumbKey(it)); if (m.og > 0) keep.add(ogKey(it)) } }
+        list.forEach { m -> m.audio?.let { if (s.keepAudio || m.senderId == myId) { keep.add(audioKey(it)); keep.add(thumbKey(it)) } } }
         return keep
     }
 
@@ -1788,6 +1845,50 @@ class NodeSession(
         }
     }
 
+    /** Send an audio file exactly as picked: music, a podcast, a recording. No re-encoding. */
+    fun sendAudio(uri: Uri, dmTo: String? = null) {
+        val r = room.value
+        scope.launch(Dispatchers.IO) {
+            val info = AudioUtil.probe(app, uri)
+            if (info == null) { onNotice("That isn't an audio file this phone can play."); return@launch }
+            val tooBig = "Audio files can be up to ${fmtSize(MAX_AUDIO_BYTES.toLong())}."
+            if (info.size > MAX_AUDIO_BYTES) { onNotice("$tooBig That one is ${fmtSize(info.size)}."); return@launch }
+            if (info.durMs > MAX_AUDIO_MS) { onNotice("Audio files can be up to 4 hours long."); return@launch }
+            val id = UUID.randomUUID().toString()
+            val tmp = File(app.cacheDir, "aout_$id")
+            coroutineContext[Job]?.let { jobs[id] = it }
+            try {
+                val copied = app.contentResolver.openInputStream(uri)?.use { input ->
+                    tmp.outputStream().use { o ->
+                        val buf = ByteArray(64 * 1024); var total = 0L
+                        while (true) {
+                            val n = input.read(buf); if (n < 0) break
+                            total += n
+                            if (total > MAX_AUDIO_BYTES) return@use false
+                            o.write(buf, 0, n)
+                        }
+                        true
+                    }
+                } ?: false
+                if (!copied || tmp.length() <= 0L) {
+                    onNotice(if (tmp.length() > 0L) tooBig else "Couldn't read that audio file.")
+                    return@launch
+                }
+                val meta = AudioMeta.encode(info.title, info.artist, info.name, info.mime)
+                vault.save(tag, thumbKey(id), meta)
+                vault.saveFrom(tag, audioKey(id), tmp)
+                val ts = System.currentTimeMillis()
+                add(audioMsg(id, myId, r.name, ts, info.durMs, dmTo, meta, tmp.length()))
+                sendVideoFile(id, ts, tmp, VideoUtil.Info(info.durMs, 0, 0, meta), dmTo, kind = KIND_AUDIO)
+            } catch (e: Exception) {
+                onNotice("Couldn't read that audio file.")
+            } finally {
+                tmp.delete()
+                jobs.remove(id)
+            }
+        }
+    }
+
     private fun pieceHash(b: ByteArray): String = Crypto.sha256Hex(b).take(32)
 
     private fun header(
@@ -1860,12 +1961,12 @@ class NodeSession(
 
     private suspend fun sendVideoFile(
         id: String, ts: Long, f: File, info: VideoUtil.Info, dmTo: String? = null,
-        og: Long = 0L, onlyTo: Set<String>? = null
+        og: Long = 0L, onlyTo: Set<String>? = null, kind: String = KIND_VIDEO
     ) {
         val size = f.length().toInt()
         val chunks = (size + CHUNK - 1) / CHUNK
         val buf = ByteArray(CHUNK)
-        if (onlyTo == null && directPeer != null && connected.value.isEmpty()) { enqueue(Queued(id, KIND_VIDEO, info.w, info.h, info.durMs)); return }
+        if (onlyTo == null && directPeer != null && connected.value.isEmpty()) { enqueue(Queued(id, kind, info.w, info.h, info.durMs)); return }
         val seal = dmTo?.let { sealFor(it) ?: run { setProgress(id, -1f); cantReach(it); return } }
         fun readPiece(raf: RandomAccessFile, i: Int): ByteArray {
             val len = minOf(CHUNK, size - i * CHUNK)
@@ -1877,7 +1978,7 @@ class NodeSession(
         setProgress(id, 0f)
         try {
             val hashes = RandomAccessFile(f, "r").use { raf -> (0 until chunks).map { pieceHash(readPiece(raf, it)) } }
-            val hdr = header(id, ts, KIND_VIDEO, size, hashes, info.w, info.h, info.durMs, info.thumb, seal, og)
+            val hdr = header(id, ts, kind, size, hashes, info.w, info.h, info.durMs, info.thumb, seal, og)
             if (seal == null && onlyTo == null) logFrame("media", id, myId, ts, "", hdr)
             out(seal, hdr, onlyTo)
             RandomAccessFile(f, "r").use { raf ->
@@ -1913,10 +2014,12 @@ class NodeSession(
             KIND_IMAGE -> ImageUtil.MAX_ORIGINAL
             KIND_VOICE -> MAX_MEDIA
             KIND_VIDEO -> if (isOriginal) MAX_ORIGINAL_VIDEO.toInt() else MAX_VIDEO_BYTES
+            KIND_AUDIO -> if (isOriginal) return else MAX_AUDIO_BYTES
             else -> return
         }
         if (size !in 1..limit || chunks != (size + CHUNK - 1) / CHUNK) return
         if (kind == KIND_VIDEO && dur > MAX_VIDEO_MS + 999) return
+        if (kind == KIND_AUDIO && dur > MAX_AUDIO_MS) return
         val arr = j.getJSONArray("hashes")
         if (arr.length() != chunks) return
         val hashes = (0 until chunks).map { arr.getString(it) }
@@ -1943,12 +2046,13 @@ class NodeSession(
             itemKey = SecretKeySpec(mk, "AES")
             w = meta.optInt("w", 0); h = meta.optInt("h", 0); dur = meta.optLong("dur", 0L)
             if (kind == KIND_VIDEO && dur > MAX_VIDEO_MS + 999) return
-            if (kind == KIND_VIDEO) thumb = meta.optString("thumb", "").takeIf { it.isNotEmpty() && it.length <= 300_000 }
+            if (kind == KIND_AUDIO && dur > MAX_AUDIO_MS) return
+            if (kind == KIND_VIDEO || kind == KIND_AUDIO) thumb = meta.optString("thumb", "").takeIf { it.isNotEmpty() && it.length <= 300_000 }
                 ?.let { runCatching { Base64.decode(it, Base64.NO_WRAP) }.getOrNull() }
         }
 
         // Video preview picture, checked against the signed fingerprint
-        if (to.isEmpty() && kind == KIND_VIDEO && th.isNotEmpty()) {
+        if (to.isEmpty() && (kind == KIND_VIDEO || kind == KIND_AUDIO) && th.isNotEmpty()) {
             val t = j.optString("thumb", "")
             if (t.length > 300_000) return
             thumb = try { Base64.decode(t, Base64.NO_WRAP) } catch (e: Exception) { return }
@@ -1958,7 +2062,7 @@ class NodeSession(
         sweepTransfers()
         if (assemblies.size >= MAX_ASSEMBLIES) return
         // Videos and large (original) photos are assembled on disk rather than in memory
-        val file = if (kind == KIND_VIDEO || size > MAX_MEDIA) File(app.cacheDir, "vin_$id.part") else null
+        val file = if (kind == KIND_VIDEO || kind == KIND_AUDIO || size > MAX_MEDIA) File(app.cacheDir, "vin_$id.part") else null
         val a = try { Assembly(j, hashes, file, itemKey) } catch (ex: Exception) { return }
         if (assemblies.putIfAbsent(id, a) != null) { a.discard(); return }
         people.seen(sid, n)
@@ -1969,6 +2073,10 @@ class NodeSession(
         when (kind) {
             KIND_IMAGE -> add(Msg(id, sid, shown, "", ts, image = id, imgW = w, imgH = h, dm = dm))
             KIND_VOICE -> add(Msg(id, sid, shown, "", ts, voice = id, durMs = dur, dm = dm))
+            KIND_AUDIO -> {
+                thumb?.let { tb -> scope.launch(Dispatchers.IO) { vault.save(tag, thumbKey(id), tb) } }
+                add(audioMsg(id, sid, shown, ts, dur, dm, thumb, size.toLong()))
+            }
             else -> {
                 thumb?.let { tb -> scope.launch(Dispatchers.IO) { vault.save(tag, thumbKey(id), tb) } }
                 add(Msg(id, sid, shown, "", ts, imgW = w, imgH = h, durMs = dur, video = id, dm = dm, og = og))
@@ -2022,7 +2130,7 @@ class NodeSession(
                 if (f != null) {
                     runCatching { a.raf?.close() }
                     if (f.length() != size.toLong()) { setProgress(id, -1f); return@launch }
-                    vault.saveFrom(tag, if (kind == KIND_VIDEO) videoKey(id) else id, f)
+                    vault.saveFrom(tag, when (kind) { KIND_VIDEO -> videoKey(id); KIND_AUDIO -> audioKey(id); else -> id }, f)
                 } else {
                     val out = ByteArrayOutputStream()
                     for (i in a.hashes.indices) out.write(a.chunks[i] ?: run { setProgress(id, -1f); return@launch })
@@ -2043,6 +2151,7 @@ class NodeSession(
                     Notifier.message(app, displayName(), if (isPrivate) "$n · PRIVATE" else n, tag = tag, dm = if (isPrivate) from else null, text = when (kind) {
                         KIND_IMAGE -> "IMG · Photo"
                         KIND_VIDEO -> "VID · Video"
+                        KIND_AUDIO -> "AUD · " + (messages.value.firstOrNull { it.id == id }?.aTitle?.ifBlank { null } ?: "Audio file")
                         else -> "VOX · Voice note"
                     })
                 }
@@ -2379,5 +2488,6 @@ class NodeSession(
         private const val KIND_IMAGE = "image"
         private const val KIND_VOICE = "voice"
         private const val KIND_VIDEO = "video"
+        private const val KIND_AUDIO = "audio"
     }
 }

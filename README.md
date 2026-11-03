@@ -54,8 +54,11 @@ A **node** is a group chat of up to 25 people that lives only on its members' ph
 
 You can see progress while sending, and cancel or retry.
 
+### 🎵 Music and audio files
+Send songs, podcasts or any audio file from ⋮ › **SEND AUDIO FILE**. They go exactly as picked, with no loss in quality, and show the title, artist and length. Press play and it keeps going while you chat, with a now-playing strip at the top of every screen. Long-press › **SAVE TO MUSIC** keeps a copy.
+
 ### 📞 Voice and video calls
-Call any contact from their chat or contact card. Calls are encrypted end to end and keep going if you lock your screen or switch apps. There are buttons for mute, speaker, camera and flip, plus Mute and Hang up in the notification.
+Call any contact from their chat or contact card. Calls are encrypted end to end and keep going if you lock your screen or switch apps. There are buttons for mute, speaker, camera and flip, plus Mute and Hang up in the notification. Pick your own ringtone, and you'll hear it ringing while you wait for them to answer.
 
 ### ✨ Chat extras
 - **Replies, reactions, edit and retract** (retract removes a message for everyone)
@@ -66,8 +69,8 @@ Call any contact from their chat or contact card. Calls are encrypted end to end
 - **Drafts** stay put; **schedule** a message for later
 - **Media gallery** for every photo and video in a chat
 
-### 🔔 Notifications
-Alerts play the **comm chirp** sound. You can reply, mark read or mute right from the notification. Message text is always hidden on the lock screen, and you can hide it everywhere.
+### 🔔 Sounds and notifications
+Alerts play the **comm chirp** by default. In Settings › **Sounds & alerts** you can choose another CyberTxTs tone or any sound on your phone, give each node or contact its own tone (⋮ › **ALERT TONE**), pick a ringtone and turn on quiet sounds inside an open chat. You can reply, mark read or mute right from the notification. Message text is always hidden on the lock screen, and you can hide it everywhere.
 
 ### 🔒 App lock
 Lock CyberTxTs with a PIN, fingerprint or face. While it's on, the app is hidden in the app switcher and screenshots are blocked.
@@ -94,7 +97,7 @@ Because there's no server, **your phone is your account**. Set one of these up e
 | **OP-ID** | The short code after a name (`VEGA//7F3A`) that tells two Vegas apart |
 | **Access key** | The secret that keeps a node private. Whoever has it can join |
 | **Unlink** | Leave a node |
-| **IMG / VID / VOX** | Photo / video / voice note |
+| **IMG / VID / VOX / AUD** | Photo / video / voice note / audio file |
 | **TX / RX** | Sending / receiving |
 
 ---
@@ -152,6 +155,17 @@ Each phone keeps **a week** of signed messages (private ones stay sealed), along
 
 - **Photos:** *Original* sends the untouched file with location and other hidden metadata (EXIF GPS, XMP and IPTC) removed.
 - **Video:** choosing *Original* sends everyone a Standard copy straight away and keeps the untouched file (up to 400 MB) on your phone. Others tap **DOWNLOAD ORIGINAL** to fetch it directly from you. Originals are never passed on by relaying phones.
+</details>
+
+<details>
+<summary><b>Audio files and sounds</b></summary>
+
+- **Audio files** go out byte for byte as you picked them, so a FLAC stays lossless. Up to **100 MB** and **4 hours** each. MP3, M4A, AAC, OGG, Opus, FLAC, WAV and whatever else your phone can play.
+- The **title, artist, file name and type** travel inside the signed item details, so they're checked like everything else. In a private channel they're sealed to that person along with the file.
+- Files are stored **encrypted on your phone**. To play one, it's decrypted to a private temporary copy that's deleted as soon as you stop. Settings › Chats & media › **Keep AUD** decides whether files from others survive a restart. Your own are always kept.
+- The player keeps going across screens, **pauses for calls, voice notes and other apps** (Android audio focus), and pauses if headphones are unplugged.
+- **Message tones** use Android notification channels, one per tone, so Do Not Disturb and your phone's notification settings still apply. **Ringtones** loop until you answer, with vibration, and stay quiet in silent mode and Do Not Disturb.
+- **Call tones:** a ringing tone while you wait, plus connect, end and mute tones. They're played on the call audio, so they follow the earpiece or speaker.
 </details>
 
 <details>
@@ -217,7 +231,7 @@ No analytics, no ads, no crash reporting, no Google Play Services.
 <details>
 <summary><b>Limits and good to know</b></summary>
 
-- Up to **25 operatives** per node. Videos up to **5 minutes**, voice notes up to **2 minutes**, original videos up to **400 MB**. Catch-up covers **7 days**.
+- Up to **25 operatives** per node. Videos up to **5 minutes**, voice notes up to **2 minutes**, original videos up to **400 MB**, audio files up to **100 MB**. Catch-up covers **7 days**.
 - Your message log is **optional** and stored **encrypted on your phone only**, with auto-purge after 7, 30 or 90 days. Photo and video storage can be switched off separately.
 - **No server means no account recovery.** Without a recovery phrase, backup or old phone, a lost phone means a new identity.
 - Android only. Calls are one-to-one for now.
@@ -251,6 +265,8 @@ CyberTxTs/app/src/main/java/com/cybertxts/app/
   Contacts.kt, ContactsUI.kt           contacts and direct chats
   Calls.kt, CallUI.kt                  voice and video calls
   Media.kt, Storage.kt                 media pipeline, settings, encrypted log
+  Audio.kt                             audio files: reading tags, the music player, the audio bubble
+  Sounds.kt, SoundsUI.kt               ringtones, message tones, call and chat sounds, tone picker
   MainActivity.kt, AccountScreens.kt, ChatExtras.kt, StarMap.kt, Diagnostics.kt, Scanner.kt, UsageUI.kt
   Lock.kt, SessionService.kt, Battery.kt, Theme.kt, People.kt, Invite.kt
 ```

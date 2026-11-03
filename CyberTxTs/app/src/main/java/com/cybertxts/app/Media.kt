@@ -397,6 +397,7 @@ object VoicePlayer {
     fun toggle(id: String, bytes: ByteArray) {
         if (playing.value == id) { stop(); return }
         stop()
+        AudioPlayer.pause()
         try {
             val p = MediaPlayer()
             mp = p

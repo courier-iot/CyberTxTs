@@ -213,7 +213,10 @@ fun SettingsScreen(vm: ChatViewModel, onClose: () -> Unit) {
             value = withContext(Dispatchers.Default) { UsageTracker.report(vm.usagePrefs()) }
         }
         NavRow("BATTERY & DATA", usage?.let { usageSummary(it) } ?: "Reading…") { page = "usage" }
-        NavRow("ALERTS", "Comm chirp" + if (AppLock.hideAlerts.collectAsStateWithLifecycle().value) " · text hidden" else "") { page = "alerts" }
+        val snd by Sounds.conf.collectAsStateWithLifecycle()
+        val sctx = LocalContext.current
+        NavRow("SOUNDS & ALERTS", Sounds.label(sctx, snd.msgTone, false) + " · " + Sounds.label(sctx, snd.callTone, true) +
+            if (AppLock.hideAlerts.collectAsStateWithLifecycle().value) " · text hidden" else "") { page = "alerts" }
         NavRow("DANGER ZONE", "Purge logs · erase this phone", Holo.Danger) { page = "danger" }
         val appCtx = LocalContext.current
         val version = remember { runCatching { appCtx.packageManager.getPackageInfo(appCtx.packageName, 0).versionName }.getOrNull() ?: "" }
@@ -261,6 +264,7 @@ private fun ChatsPage(s: AppSettings, onChange: (AppSettings) -> Unit, onBack: (
         SettingsSection("STORED MEDIA") {
             SettingRow("Keep IMG", "Off: photos are wiped when you unlink or restart.", s.keepImages) { onChange(s.copy(keepImages = it)) }
             SettingRow("Keep VID", "Off: videos are wiped when you unlink or restart.", s.keepVideos) { onChange(s.copy(keepVideos = it)) }
+            SettingRow("Keep AUD", "Off: audio files others send are wiped when you unlink or restart. Your own are always kept.", s.keepAudio) { onChange(s.copy(keepAudio = it)) }
             Text("VOX notes are never stored. They vanish when you unlink.", style = MaterialTheme.typography.bodySmall, color = Holo.InkDim)
         }
         SettingsSection("PRIVACY") {
@@ -307,23 +311,45 @@ private fun NetworkPage(s: AppSettings, onChange: (AppSettings) -> Unit, onBack:
 private fun AlertsPage(onBack: () -> Unit) {
     val ctx = LocalContext.current
     val hide by AppLock.hideAlerts.collectAsStateWithLifecycle()
-    ConsolePage("ALERTS", "SETTINGS", onBack) {
-        SettingsSection("SOUND") {
-            GhostButton("Alert tone · comm chirp", Modifier.fillMaxWidth(), color = Holo.Primary) {
+    val c by Sounds.conf.collectAsStateWithLifecycle()
+    var choosing by remember { mutableStateOf<Boolean?>(null) }     // true = ringtone, false = message tone
+    ConsolePage("SOUNDS & ALERTS", "SETTINGS", onBack) {
+        SettingsSection("MESSAGES") {
+            GhostButton("Message tone · " + Sounds.label(ctx, c.msgTone, false), Modifier.fillMaxWidth(), color = Holo.Primary) { choosing = false }
+            Text("Each node or contact can have its own: ⋮ > ALERT TONE in that chat.", style = MaterialTheme.typography.bodySmall, color = Holo.InkDim)
+            SettingRow("Sounds in an open chat", "A quiet sound when you send, or a message arrives, in the chat on screen. Not in silent mode.", c.chatSounds) {
+                Sounds.update(c.copy(chatSounds = it))
+            }
+            GhostButton("Android notification settings", Modifier.fillMaxWidth()) {
                 runCatching {
                     ctx.startActivity(
-                        Intent(android.provider.Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+                        Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
                             .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, ctx.packageName)
-                            .putExtra(android.provider.Settings.EXTRA_CHANNEL_ID, Notifier.CH_MESSAGES)
                     )
                 }
             }
+        }
+        SettingsSection("CALLS") {
+            GhostButton("Ringtone · " + Sounds.label(ctx, c.callTone, true), Modifier.fillMaxWidth(), color = Holo.Primary) { choosing = true }
+            SettingRow("Vibrate when ringing", "Also follows your phone's silent and vibrate modes.", c.callVibrate) {
+                Sounds.update(c.copy(callVibrate = it))
+            }
+            SettingRow("Call tones", "Ringing while you wait for an answer, and short tones when a call connects, ends, or you mute.", c.callTones) {
+                Sounds.update(c.copy(callTones = it))
+            }
+            Text("Do Not Disturb and silent mode keep incoming calls quiet; the call screen still appears.",
+                style = MaterialTheme.typography.bodySmall, color = Holo.InkDim)
         }
         SettingsSection("PRIVACY") {
             SettingRow("Hide message text in alerts",
                 "Notifications say \"New transmission\" without the sender, node or text.", hide) { AppLock.setHideAlerts(it) }
             Text("Message text is always hidden on the lock screen.", style = MaterialTheme.typography.bodySmall, color = Holo.InkDim)
         }
+    }
+    when (choosing) {
+        true -> ToneDialog(ring = true, current = c.callTone, onPick = { v -> Sounds.update(Sounds.conf.value.copy(callTone = v ?: "comm")) }) { choosing = null }
+        false -> ToneDialog(ring = false, current = c.msgTone, onPick = { v -> Sounds.update(Sounds.conf.value.copy(msgTone = v ?: "chirp")) }) { choosing = null }
+        null -> {}
     }
 }
 
